@@ -1,0 +1,7 @@
+{
+  "subscription_provider": "OpenAI",
+  "api_provider": "autocode",
+  "api_env_key": "AUTOCODE_API_KEY",
+  "api_base_url": "https://vip.auto-code.net",
+  "api_display_name": "AutoCode API key"
+}
