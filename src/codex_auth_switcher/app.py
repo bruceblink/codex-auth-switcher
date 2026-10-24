@@ -1,4 +1,4 @@
-"""Tkinter desktop application and CLI entry point."""
+"""Desktop and CLI controls for restoring complete Codex authentication modes."""
 
 from __future__ import annotations
 
@@ -11,421 +11,426 @@ from pathlib import Path
 
 try:
     import tkinter as tk
-    from tkinter import messagebox, ttk
-except ImportError:  # pragma: no cover - only reached on Python builds without Tk.
-    tk = None
-    messagebox = None
-    ttk = None
+    from tkinter import filedialog, messagebox, ttk
+except ImportError:
+    tk = ttk = filedialog = messagebox = None
 
-from .config import (
-    CodexPaths,
-    SwitcherSettings,
-    inspect_state,
-    load_settings,
-    save_settings,
-    switch_provider,
-)
-
-
-def project_root() -> Path:
-    """Return the project root used for the optional settings file."""
-
-    return Path(__file__).resolve().parents[2]
+from .config import CodexPaths, SwitcherError, load_settings, save_settings
+from .modes import ModeStore
 
 
 def default_settings_path() -> Path:
-    """Resolve the checked-in settings file without touching Codex state."""
-
-    return project_root() / "settings.json"
+    return Path(__file__).resolve().parents[2] / "settings.json"
 
 
-class MaskedSecretEntry(ttk.Entry):
-    """Entry that keeps the key private while showing only its ends.
+class MaskedSecretEntry(ttk.Entry if ttk else object):
+    """Keep the actual key out of Tk text values and clipboard copy operations."""
 
-    The displayed string has the same length as the secret, so normal cursor
-    movement and selection still work.  Clipboard paste is handled explicitly;
-    copying the field copies the masked display rather than the secret.
-    """
-
-    def __init__(self, master: tk.Misc, **kwargs: object) -> None:
+    def __init__(self, master, **kwargs):
         self._secret = ""
-        self._variable = tk.StringVar()
+        self._variable = tk.StringVar(master=master)
         super().__init__(master, textvariable=self._variable, **kwargs)
-        self.bind("<KeyPress>", self._on_key_press, add="+")
-        self.bind("<Control-KeyPress-v>", self._on_paste, add="+")
-        self.bind("<Control-KeyPress-V>", self._on_paste, add="+")
+        self.bind("<KeyPress>", self._on_key_press)
+        self.bind("<<Paste>>", self._on_paste)
+        self.bind("<Shift-Insert>", self._on_paste)
+        self.bind("<<Cut>>", lambda event: "break")
 
     @staticmethod
-    def _mask(secret: str) -> str:
+    def _mask(secret):
         if len(secret) <= 1:
             return "·" if secret else ""
-        if len(secret) == 2:
-            return secret
-        return f"{secret[0]}{'·' * (len(secret) - 2)}{secret[-1]}"
+        return secret[0] + "·" * (len(secret) - 2) + secret[-1]
 
-    def _selection(self) -> tuple[int, int]:
+    def _selection(self):
         try:
             return self.index("sel.first"), self.index("sel.last")
         except tk.TclError:
-            cursor = self.index(tk.INSERT)
-            return cursor, cursor
+            return self.index(tk.INSERT), self.index(tk.INSERT)
 
-    def _render(self, cursor: int | None = None) -> None:
-        if cursor is None:
-            cursor = self.index(tk.INSERT)
+    def _render(self, cursor):
         self._variable.set(self._mask(self._secret))
         self.icursor(max(0, min(cursor, len(self._secret))))
+        self.selection_clear()
 
-    def _replace_selection(self, value: str) -> None:
+    def _replace_selection(self, value):
         start, end = self._selection()
-        self._secret = f"{self._secret[:start]}{value}{self._secret[end:]}"
+        self._secret = self._secret[:start] + value + self._secret[end:]
         self._render(start + len(value))
 
-    def _on_paste(self, _event: tk.Event[tk.Misc]) -> str:
+    def _on_paste(self, _event):
         try:
             value = self.clipboard_get().strip()
         except tk.TclError:
-            value = ""
-        if value:
+            return "break"
+        if value and not any(ord(char) < 33 for char in value):
             self._replace_selection(value)
         return "break"
 
-    def _on_key_press(self, event: tk.Event[tk.Misc]) -> str | None:
+    def _on_key_press(self, event):
         key = str(event.keysym).lower()
-        if event.state & 0x0004:  # Control modifier on Windows.
+        if event.state & 0x0004:
             if key == "v":
                 return self._on_paste(event)
             if key == "a":
                 self.selection_range(0, tk.END)
                 return "break"
-            if key in {"c", "left", "right", "home", "end"}:
-                return None
-            return "break"
-
+            return None if key in {"c", "left", "right", "home", "end"} else "break"
         start, end = self._selection()
         cursor = self.index(tk.INSERT)
-        if key == "backspace":
-            if start == end and cursor > 0:
-                start, end = cursor - 1, cursor
-            self._secret = f"{self._secret[:start]}{self._secret[end:]}"
-            self._render(start)
-            return "break"
-        if key == "delete":
+        if key in {"backspace", "delete"}:
             if start == end:
-                start, end = cursor, min(cursor + 1, len(self._secret))
-            self._secret = f"{self._secret[:start]}{self._secret[end:]}"
+                start, end = (
+                    (max(0, cursor - 1), cursor)
+                    if key == "backspace"
+                    else (cursor, cursor + 1)
+                )
+            self._secret = self._secret[:start] + self._secret[end:]
             self._render(start)
             return "break"
         if key in {"left", "right", "home", "end", "tab", "return", "escape"}:
             return None
-        if event.char and event.char.isprintable():
+        if event.char and event.char.isprintable() and not event.char.isspace():
             self._replace_selection(event.char)
-            return "break"
         return "break"
 
-    def get_secret(self) -> str:
-        """Return the key to the caller without placing it in a log or label."""
-
+    def get_secret(self):
         return self._secret
 
-    def clear(self) -> None:
-        """Clear the in-memory key and its masked display."""
-
+    def clear(self):
         self._secret = ""
         self._variable.set("")
 
 
+def error_message(exc):
+    return (
+        str(exc)
+        if isinstance(exc, SwitcherError)
+        else "文件操作失败。请检查目录权限、文件占用和磁盘空间。"
+    )
+
+
 class SwitcherApp:
-    """Small desktop window for switching the active Codex provider."""
-
-    def __init__(
-        self,
-        root: tk.Tk,
-        paths: CodexPaths,
-        settings: SwitcherSettings,
-        settings_path: Path,
-    ) -> None:
-        self.root = root
-        self.paths = paths
-        self.settings = settings
-        self.settings_path = settings_path
-        self.root.title("Codex 认证切换工具")
-        self.root.geometry("760x650")
-        self.root.minsize(680, 580)
-
-        self.provider_value = tk.StringVar(value="读取中")
-        self.key_value = tk.StringVar(value="读取中")
-        self.config_value = tk.StringVar(value=str(paths.config))
-        self.profile_value = tk.StringVar(value=str(paths.subscription_profile))
-        self.api_base_value = tk.StringVar(value=settings.api_base_url)
-        self.persist_key_value = tk.BooleanVar(value=True)
-        self.remember_base_value = tk.BooleanVar(value=False)
-        self.api_key_entry: MaskedSecretEntry | None = None
-        self.log_text: tk.Text | None = None
-        self._build_ui()
-        self.refresh()
-
-    def _build_ui(self) -> None:
-        """Build the stable controls used by both provider actions."""
-
-        style = ttk.Style(self.root)
-        try:
-            style.theme_use("vista")
-        except tk.TclError:
-            pass
-        style.configure("Title.TLabel", font=("Segoe UI", 16, "bold"))
-        style.configure("Action.TButton", padding=(16, 10))
-
-        outer = ttk.Frame(self.root, padding=20)
+    def __init__(self, root, paths, settings, settings_path):
+        self.root, self.paths, self.settings, self.settings_path = (
+            root,
+            paths,
+            settings,
+            settings_path,
+        )
+        self.store = ModeStore(paths, settings)
+        root.title("Codex 认证切换工具")
+        root.geometry("820x720")
+        root.minsize(740, 680)
+        self.summary = tk.StringVar(master=root)
+        self.subscription_provider = tk.StringVar(
+            master=root, value=settings.subscription_provider
+        )
+        self.api_provider = tk.StringVar(master=root, value=settings.api_provider)
+        self.base_url = tk.StringVar(master=root)
+        self.remember_base = tk.BooleanVar(master=root, value=False)
+        outer = ttk.Frame(root, padding=20)
         outer.pack(fill="both", expand=True)
-
-        ttk.Label(outer, text="Codex 认证切换工具", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(
+        ttk.Label(outer, text="Codex 认证切换工具", font=("Segoe UI", 16, "bold")).pack(
+            anchor="w"
+        )
+        ttk.Label(outer, textvariable=self.summary, wraplength=730).pack(
+            anchor="w", pady=(12, 8)
+        )
+        ttk.Label(outer, text=str(paths.config), wraplength=730).pack(
+            anchor="w", pady=(0, 12)
+        )
+        self.tree = ttk.Treeview(
             outer,
-            text="切换只修改主 config.toml。autocode.config.toml 和 auth.json 不会被修改；API key 只按下方选项保存到 .env。",
-            wraplength=700,
-        ).pack(anchor="w", pady=(6, 16))
-
-        state_frame = ttk.LabelFrame(outer, text="当前状态", padding=12)
-        state_frame.pack(fill="x")
-        self._state_row(state_frame, 0, "当前 provider", self.provider_value)
-        self._state_row(state_frame, 1, "API key 状态", self.key_value)
-        self._state_row(state_frame, 2, "主配置", self.config_value)
-        self._state_row(state_frame, 3, "订阅 profile（保留）", self.profile_value)
-
-        action_frame = ttk.LabelFrame(outer, text="切换", padding=12)
-        action_frame.pack(fill="x", pady=(16, 0))
-        ttk.Button(
-            action_frame,
-            text=f"切换到订阅（{self.settings.subscription_provider}）",
-            style="Action.TButton",
-            command=lambda: self.switch("subscription"),
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        ttk.Button(
-            action_frame,
-            text=f"切换到 {self.settings.api_display_name}",
-            style="Action.TButton",
-            command=lambda: self.switch("api"),
-        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        action_frame.columnconfigure(0, weight=1)
-        action_frame.columnconfigure(1, weight=1)
-
-        api_frame = ttk.LabelFrame(outer, text="API key 参数", padding=12)
-        api_frame.pack(fill="x", pady=(12, 0))
-        ttk.Label(api_frame, text="base_url", width=18).grid(row=0, column=0, sticky="w", pady=3)
-        ttk.Entry(api_frame, textvariable=self.api_base_value).grid(
-            row=0, column=1, columnspan=2, sticky="ew", pady=3
+            columns=("provider", "model", "effort", "ready"),
+            height=2,
+            selectmode="none",
         )
-        ttk.Label(api_frame, text="API_KEY（首尾可见，中间使用 ·）", width=28).grid(
-            row=1, column=0, sticky="w", pady=3
+        self.tree.heading("#0", text="模式")
+        self.tree.column("#0", width=75, stretch=False)
+        for key, title, width in (
+            ("provider", "Provider", 110),
+            ("model", "模型", 160),
+            ("effort", "推理级别", 100),
+            ("ready", "认证状态", 100),
+        ):
+            self.tree.heading(key, text=title)
+            self.tree.column(key, width=width)
+        self.tree.pack(fill="x")
+        toolbar = ttk.Frame(outer)
+        toolbar.pack(fill="x", pady=10)
+        ttk.Button(toolbar, text="初始化 / 补齐模式", command=self.initialize).pack(
+            side="left"
         )
-        self.api_key_entry = MaskedSecretEntry(api_frame, width=54)
-        self.api_key_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
-        ttk.Checkbutton(
-            api_frame,
-            text=f"保存到 {self.paths.dotenv}",
-            variable=self.persist_key_value,
-        ).grid(row=2, column=1, sticky="w", pady=(5, 0))
-        ttk.Checkbutton(
-            api_frame,
-            text="记住 base_url 为默认值",
-            variable=self.remember_base_value,
-        ).grid(row=2, column=2, sticky="w", pady=(5, 0))
-        api_frame.columnconfigure(1, weight=1)
-        api_frame.columnconfigure(2, weight=1)
-
-        utility_frame = ttk.Frame(outer)
-        utility_frame.pack(fill="x", pady=(12, 0))
-        ttk.Button(utility_frame, text="刷新状态", command=self.refresh).pack(side="left")
-        ttk.Button(utility_frame, text="打开 .codex 目录", command=self.open_codex_home).pack(
-            side="left", padx=(8, 0)
-        )
-        ttk.Label(
-            utility_frame,
-            text="修改后请完全退出并重新打开桌面 Codex。",
-            foreground="#6b4f00",
-        ).pack(side="right")
-
-        log_frame = ttk.LabelFrame(outer, text="操作记录", padding=8)
-        log_frame.pack(fill="both", expand=True, pady=(14, 0))
-        self.log_text = tk.Text(log_frame, height=7, state="disabled", wrap="word")
-        self.log_text.pack(fill="both", expand=True)
-
-    @staticmethod
-    def _state_row(parent: ttk.Frame, row: int, label: str, value: tk.StringVar) -> None:
-        """Add one redacted state row to the status panel."""
-
-        ttk.Label(parent, text=label, width=18).grid(row=row, column=0, sticky="w", pady=2)
-        ttk.Label(parent, textvariable=value).grid(row=row, column=1, sticky="w", pady=2)
-        parent.columnconfigure(1, weight=1)
-
-    def _log(self, lines: list[str]) -> None:
-        """Append status text without allowing edits from the user."""
-
-        if self.log_text is None:
-            return
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", "\n".join(lines) + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
-
-    def refresh(self) -> None:
-        """Refresh redacted provider and key-source information."""
-
-        try:
-            state = inspect_state(self.paths, self.settings)
-        except Exception as exc:  # noqa: BLE001 - the UI must show a useful path error.
-            self.provider_value.set("读取失败")
-            self.key_value.set(str(exc))
-            self._log([f"读取状态失败：{exc}"])
-            return
-
-        self.provider_value.set(str(state["current_provider"]))
-        if state["api_key_detected"]:
-            self.key_value.set(f"已检测（{state['api_key_source']}）")
-        else:
-            self.key_value.set("未检测到")
-        self.profile_value.set(
-            f"{state['subscription_profile']}（{'存在' if state['subscription_profile_exists'] else '未找到'}）"
-        )
-
-    def switch(self, target: str) -> None:
-        """Apply one switch and explain backup/restart state in the UI."""
-
-        api_base_url: str | None = None
-        api_key: str | None = None
-        persist_api_key = False
-        if target == "api":
-            api_base_url = self.api_base_value.get().strip()
-            api_key = self.api_key_entry.get_secret() if self.api_key_entry else None
-            persist_api_key = self.persist_key_value.get()
-
-        try:
-            result = switch_provider(
-                self.paths,
-                self.settings,
-                target,  # type: ignore[arg-type]
-                api_base_url=api_base_url,
-                api_key=api_key or None,
-                persist_api_key=persist_api_key,
+        imports = ttk.Menubutton(toolbar, text="导入来源")
+        menu = tk.Menu(imports, tearoff=False)
+        for key, title in (
+            ("subscription_config", "订阅配置"),
+            ("subscription_auth", "订阅认证"),
+            ("api_config", "API 配置"),
+            ("api_auth", "API 认证"),
+        ):
+            menu.add_command(
+                label=title, command=lambda k=key, t=title: self.import_source(k, t)
             )
-        except Exception as exc:  # noqa: BLE001 - surface actionable file errors.
-            self._log([f"切换失败：{exc}"])
-            messagebox.showerror("切换失败", str(exc))
+        imports.configure(menu=menu)
+        imports.pack(side="left", padx=8)
+        ttk.Button(toolbar, text="刷新状态", command=self.refresh).pack(side="right")
+        parameters = ttk.Frame(outer)
+        parameters.pack(fill="x", pady=(8, 12))
+        fields = (
+            ("订阅 model_provider", self.subscription_provider),
+            ("API provider ID", self.api_provider),
+            ("API base_url", self.base_url),
+        )
+        for row, (label, variable) in enumerate(fields):
+            ttk.Label(parameters, text=label, width=24).grid(
+                row=row, column=0, sticky="w", pady=5
+            )
+            ttk.Entry(parameters, textvariable=variable).grid(
+                row=row, column=1, sticky="ew", pady=5
+            )
+        ttk.Label(parameters, text="API key", width=24).grid(
+            row=3, column=0, sticky="w", pady=5
+        )
+        self.key_entry = MaskedSecretEntry(parameters)
+        self.key_entry.grid(row=3, column=1, sticky="ew", pady=5)
+        ttk.Checkbutton(
+            parameters, text="记住 base_url 为默认值", variable=self.remember_base
+        ).grid(row=4, column=1, sticky="w", pady=4)
+        parameters.columnconfigure(1, weight=1)
+        actions = ttk.Frame(outer)
+        actions.pack(fill="x", pady=(0, 12))
+        ttk.Button(
+            actions, text="切换到订阅", command=lambda: self.switch("subscription")
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ttk.Button(
+            actions, text="切换到 API key", command=lambda: self.switch("api")
+        ).pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ttk.Label(outer, text="操作记录").pack(anchor="w")
+        self.log = tk.Text(outer, height=9, state="disabled", wrap="word")
+        self.log.pack(fill="both", expand=True, pady=(6, 0))
+        self.refresh(fill_inputs=True)
+        self.append("旧会话可能保留原 provider。切换后请重启 Codex 并使用新任务。")
+
+    def append(self, text):
+        self.log.configure(state="normal")
+        self.log.insert("end", text + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def refresh(self, fill_inputs=False):
+        try:
+            state = self.store.inspect()
+            self.summary.set(
+                f"当前模式：{state['mode']}    Provider：{state['current_provider']}    模型：{state['model']} / {state['reasoning_effort']}    认证：{state['auth_mode']}"
+            )
+            self.tree.delete(*self.tree.get_children())
+            for mode, label in (("subscription", "订阅"), ("api", "API key")):
+                profile = state["profiles"].get(mode, {})
+                self.tree.insert(
+                    "",
+                    "end",
+                    iid=mode,
+                    text=label,
+                    values=(
+                        profile.get("provider", "未初始化"),
+                        profile.get("model", "-"),
+                        profile.get("reasoning_effort", "-"),
+                        "已就绪" if profile.get("ready") else "待补齐",
+                    ),
+                )
+            if fill_inputs:
+                api = state["profiles"].get("api", {})
+                self.api_provider.set(
+                    os.environ.get("CODEX_API_PROVIDER")
+                    or api.get("provider")
+                    or (
+                        state["current_provider"]
+                        if state["mode"] == "api"
+                        else self.settings.api_provider
+                    )
+                )
+                self.subscription_provider.set(
+                    os.environ.get("CODEX_MODEL_PROVIDER")
+                    or state["profiles"].get("subscription", {}).get("provider")
+                    or self.settings.subscription_provider
+                )
+                self.base_url.set(
+                    os.environ.get(self.settings.api_base_url_env_key)
+                    or (state["base_url"] if state["mode"] == "api" else "")
+                )
+            if state["recovery_pending"]:
+                self.append("检测到未完成写入。请关闭 Codex 后执行初始化以恢复。")
+            return state
+        except (SwitcherError, OSError, ValueError, TypeError) as exc:
+            self.summary.set("读取失败")
+            self.append(error_message(exc))
+            return None
+
+    def initialize(self, sources=None):
+        try:
+            self.store.initialize(sources)
+            self.refresh(fill_inputs=True)
+            state = self.store.inspect()
+            for mode, profile in state["profiles"].items():
+                self.append(
+                    f"{mode}：配置来源 {profile['config_source']}；认证来源 {profile['auth_source']}"
+                )
+                if profile["issue"]:
+                    self.append(profile["issue"])
+            self.append("模式状态已加密保存。当前配置和认证保持原样。")
+        except (SwitcherError, OSError, ValueError, TypeError) as exc:
+            messagebox.showerror("初始化失败", error_message(exc), parent=self.root)
+
+    def import_source(self, key, title):
+        path = filedialog.askopenfilename(
+            title=f"选择{title}文件", initialdir=self.paths.home, parent=self.root
+        )
+        if path:
+            self.initialize({key: Path(path)})
+
+    def switch(self, target):
+        try:
+            provider = (
+                (self.api_provider if target == "api" else self.subscription_provider)
+                .get()
+                .strip()
+            )
+            provider = provider or os.environ.get(
+                "CODEX_API_PROVIDER" if target == "api" else "CODEX_MODEL_PROVIDER"
+            )
+            base = (
+                (
+                    self.base_url.get().strip()
+                    or os.environ.get(self.settings.api_base_url_env_key)
+                )
+                if target == "api"
+                else None
+            )
+            key = (self.key_entry.get_secret() or None) if target == "api" else None
+            result = self.store.switch(
+                target, provider=provider, api_base_url=base, api_key=key
+            )
+        except (SwitcherError, OSError, ValueError, TypeError) as exc:
+            self.append(error_message(exc))
+            self.refresh()
+            messagebox.showerror("切换失败", error_message(exc), parent=self.root)
             return
-
-        if target == "api" and self.remember_base_value.get() and api_base_url:
-            try:
-                self.settings = replace(self.settings, api_base_url=api_base_url)
-                save_settings(self.settings_path, self.settings)
-            except Exception as exc:  # noqa: BLE001 - the provider switch already succeeded.
-                self._log([f"默认 base_url 保存失败：{exc}"])
-
-        lines = [
-            f"已选择 {result.provider}。配置是否改变：{'是' if result.changed else '否'}。",
-        ]
-        if result.backup_path:
-            lines.append(f"备份：{result.backup_path}")
-        lines.extend(result.warnings)
-        lines.append("请完全退出并重新打开桌面 Codex 后开始新任务。")
-        self._log(lines)
-        if self.api_key_entry:
-            self.api_key_entry.clear()
+        self.key_entry.clear()
         self.refresh()
-        messagebox.showinfo("切换完成", "provider 已更新。请重启桌面 Codex 使设置生效。")
-
-    def open_codex_home(self) -> None:
-        """Open the Codex state directory in Windows Explorer."""
-
-        self.paths.home.mkdir(parents=True, exist_ok=True)
-        if hasattr(os, "startfile"):
-            os.startfile(str(self.paths.home))  # type: ignore[attr-defined]
-        else:  # pragma: no cover - useful only when manually running on Unix.
-            self._log([f"Codex 目录：{self.paths.home}"])
-
-
-def run_gui(paths: CodexPaths, settings: SwitcherSettings, settings_path: Path) -> int:
-    """Start the Tkinter desktop application."""
-
-    if tk is None:
-        raise RuntimeError("当前 Python 没有 Tkinter，请安装带 Tcl/Tk 的 Python 发行版。")
-    root = tk.Tk()
-    SwitcherApp(root, paths, settings, settings_path)
-    root.mainloop()
-    return 0
+        self.append(
+            f"已选择 {target}；文件变化：{'是' if result['changed'] else '否'}。"
+        )
+        if result["backup"]:
+            self.append(f"配置备份：{result['backup']}")
+        if target == "api" and base and self.remember_base.get():
+            try:
+                self.settings = replace(self.settings, api_base_url=base)
+                save_settings(self.settings_path, self.settings)
+            except (SwitcherError, OSError, ValueError, TypeError) as exc:
+                self.append("切换已完成，但默认地址保存失败：" + error_message(exc))
+        self.append("请完全退出并重新打开桌面 Codex，再开始新任务。")
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Create the command-line interface used by scripts and diagnostics."""
-
-    parser = argparse.ArgumentParser(description="Switch the active Codex provider safely.")
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Restore Codex subscription/API configuration and authentication together."
+    )
     parser.add_argument(
         "--target",
-        choices=("gui", "subscription", "api", "status"),
+        choices=("gui", "status", "initialize", "subscription", "api"),
         default="gui",
-        help="open the GUI or perform one redacted CLI action",
     )
-    parser.add_argument("--codex-home", help="override CODEX_HOME for testing or another profile")
-    parser.add_argument("--settings", type=Path, help="path to a settings.json file")
-    parser.add_argument("--api-base-url", help="API provider base URL for --target api")
+    parser.add_argument("--codex-home")
+    parser.add_argument("--settings", type=Path)
+    for mode in ("subscription", "api"):
+        for kind in ("config", "auth"):
+            parser.add_argument(
+                f"--{mode}-{kind}", type=Path, help="initialization source file"
+            )
+    parser.add_argument(
+        "--provider", help="explicit provider ID; overrides environment and saved mode"
+    )
+    parser.add_argument("--api-base-url")
     parser.add_argument(
         "--api-key-stdin",
         action="store_true",
-        help="read the API key from stdin for --target api; never pass keys as command-line arguments",
+        help="read a key from stdin, never from a command argument",
     )
-    parser.add_argument(
-        "--no-save-api-key",
-        action="store_true",
-        help="do not write a stdin API key to the Codex .env file",
-    )
-    parser.add_argument(
-        "--remember-base-url",
-        action="store_true",
-        help="save --api-base-url as the project default",
-    )
+    parser.add_argument("--remember-base-url", action="store_true")
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Run the GUI or one command-line operation."""
-
+def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    paths = CodexPaths.resolve(args.codex_home)
-    settings = load_settings(args.settings or default_settings_path())
-
-    if args.target == "gui":
-        return run_gui(paths, settings, args.settings or default_settings_path())
-    if args.target == "status":
-        print(json.dumps(inspect_state(paths, settings), ensure_ascii=False, indent=2))
-        return 0
-
+    sources = {
+        f"{mode}_{kind}": getattr(args, f"{mode}_{kind}")
+        for mode in ("subscription", "api")
+        for kind in ("config", "auth")
+        if getattr(args, f"{mode}_{kind}")
+    }
+    if sources and args.target != "initialize":
+        parser.error("source files require --target initialize")
     if args.target != "api" and (
-        args.api_base_url or args.api_key_stdin or args.no_save_api_key or args.remember_base_url
+        args.api_base_url is not None or args.api_key_stdin or args.remember_base_url
     ):
         parser.error("API input options require --target api")
-    api_key = sys.stdin.read().strip() if args.api_key_stdin else None
-    result = switch_provider(
-        paths,
-        settings,
-        args.target,  # type: ignore[arg-type]
-        api_base_url=args.api_base_url,
-        api_key=api_key or None,
-        persist_api_key=bool(api_key) and not args.no_save_api_key,
-    )
-    if args.target == "api" and args.remember_base_url and args.api_base_url:
-        save_settings(args.settings or default_settings_path(), replace(settings, api_base_url=args.api_base_url))
-    print(f"provider={result.provider}")
-    print(f"changed={str(result.changed).lower()}")
-    print(f"api_key_detected={str(result.api_key.detected).lower()}")
-    print(f"api_key_source={result.api_key.source or 'none'}")
-    if result.backup_path:
-        print(f"backup={result.backup_path}")
-    for warning in result.warnings:
-        print(f"warning={warning}")
-    print("restart_required=true")
-    return 0
+    if args.provider and args.target not in {"subscription", "api"}:
+        parser.error("--provider requires a switch target")
+    if args.remember_base_url and not args.api_base_url:
+        parser.error("--remember-base-url requires --api-base-url")
+    try:
+        settings_path = args.settings or default_settings_path()
+        settings = load_settings(settings_path)
+        paths = CodexPaths.resolve(args.codex_home)
+        store = ModeStore(paths, settings)
+        if args.target == "gui":
+            if tk is None:
+                raise SwitcherError(
+                    "Install Python with Tcl/Tk to open the desktop window."
+                )
+            root = tk.Tk()
+            SwitcherApp(root, paths, settings, settings_path)
+            root.mainloop()
+            return 0
+        if args.target == "status":
+            result = store.inspect()
+        elif args.target == "initialize":
+            result = store.initialize(sources)
+        else:
+            key = sys.stdin.read().strip() if args.api_key_stdin else None
+            if args.api_key_stdin and not key:
+                raise SwitcherError("No API key was provided on stdin.")
+            provider = args.provider or os.environ.get(
+                "CODEX_API_PROVIDER" if args.target == "api" else "CODEX_MODEL_PROVIDER"
+            )
+            result = store.switch(
+                args.target,
+                provider=provider,
+                api_key=key,
+                api_base_url=args.api_base_url
+                or (
+                    os.environ.get(settings.api_base_url_env_key)
+                    if args.target == "api"
+                    else None
+                ),
+            )
+            if args.remember_base_url:
+                try:
+                    save_settings(
+                        settings_path, replace(settings, api_base_url=args.api_base_url)
+                    )
+                except (SwitcherError, OSError, ValueError, TypeError):
+                    result["warning"] = (
+                        "Switch completed, but saving the default base URL failed."
+                    )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    except (SwitcherError, OSError, ValueError, TypeError) as exc:
+        print(error_message(exc), file=sys.stderr)
+        return 1
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     raise SystemExit(main())

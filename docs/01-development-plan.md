@@ -1,39 +1,38 @@
-# Codex Auth Switcher 开发计划
+# 第一版开发计划
 
 ## 目标
 
-为 Windows 桌面 Codex 提供一个本地 GUI 和 CLI。用户可以在订阅 provider 与 AutoCode API key provider 之间切换。
+在 Windows 上提供可运行的 GUI 和 CLI，成组切换 Codex 的模式配置与认证。第一版保留 Python + Tkinter，不执行框架迁移。
 
 ## 范围
 
-1. 读取 `%USERPROFILE%\.codex\config.toml`。
-2. 更新顶层 `model_provider`。
-3. 在 API key 模式下确保 `model_providers.autocode` 使用 `AUTOCODE_API_KEY`。
-4. 写入前生成带时间戳的配置备份。
-5. 显示 API key 是否存在及其来源，但不显示 key。
-6. 支持用户输入 API `base_url` 和 API key；输入框显示首尾字符，中间字符显示为 `·`。
-7. 可把用户输入的 API key 写入 `.codex\.env`，但不创建包含 key 的备份。
-8. 保留 `autocode.config.toml`、`auth.json` 和其他 Codex 状态文件。
+1. 读取当前主配置和已有备份，不依赖 `autocode.config.toml`。
+2. 保存两种模式的 provider、模型、推理级别、上下文参数和认证。
+3. 保留当前共享设置。认证存档通过 Windows DPAPI 加密。
+4. GUI 支持输入 provider、base_url、脱敏 key，以及导入模式来源。UI 输入优先于环境变量。
+5. 配置先解析校验再备份。文件更新失败时恢复，外部冲突时停止。
+6. 提供隔离目录测试、真实窗口验收和源码启动说明。
 
 ## 接受条件
 
-- 订阅操作只切换到 `settings.json` 的 `subscription_provider`。
-- API 操作只切换到 `settings.json` 的 `api_provider`，并保留现有 TOML 其他内容。
-- 备份文件名符合 `config.toml.bak-YYYYMMDD-HHmmss`。
-- 配置使用 UTF-8 和 LF 换行。
-- GUI 与 CLI 都不输出密钥值。
-- GUI 的 key 输入框只显示脱敏文本，配置文件不包含 key 值。
-- 没有 API key 时，工具仍可完成配置切换，并给出桌面 `.env` 配置提示。
+- API 与订阅往返可以恢复各自的模型参数和认证。
+- 缺失认证、无效 TOML、错误 URL、模型推理级别不支持时不写入活动文件。
+- 配置备份不覆盖已有文件，认证不创建新的明文备份。
+- API key 不进入项目设置、日志或配置。输出不包含认证正文。
+- 现有共享配置、`autocode.config.toml` 和已有认证备份不被覆盖。
+- 明确提示旧会话 provider 可能不变。远程认证与旧会话迁移分别记录为未验证和未实现。
 
 ## 验证命令
 
 ```powershell
-py -3 -m py_compile .\main.py .\src\codex_auth_switcher\*.py
-py -3 .\main.py --target status
+py -3 -m unittest discover -s tests -v
+py -3 -m compileall -q main.py src tests
+py -3 main.py --target status
+py -3 tests/gui_acceptance.py
 ```
 
-真实切换前，先复制或确认 `config.toml` 的自动备份。桌面 Codex 重启后再验证当前 provider。
+不适用：Rust 检查、Docker 集成测试、远程 API 测试。
 
 ## 回滚边界
 
-只恢复同一目录中最近一次 `config.toml.bak-*` 文件。不要恢复 `auth.json`，也不要把任何 API key 放入备份或 Git。
+代码改动限于本项目。真实 Codex 目录只初始化加密状态，不在当前会话执行模式切换。认证恢复记录保存在 Codex 目录，不进入仓库。详细边界见 [认证模式恢复计划](02-auth-mode-recovery-plan.md)。

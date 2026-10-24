@@ -9,3 +9,9 @@ dist/
 *.egg-info/
 .idea/
 .vscode/
+.env
+.env.*
+auth.json
+auth.json.*
+*.dpapi
+.codex/

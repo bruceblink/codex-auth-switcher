@@ -3,7 +3,7 @@ name = "codex-auth-switcher"
 version = "0.1.0"
 description = "Windows GUI and CLI for switching Codex provider authentication"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["tomlkit>=0.13.3,<1"]
 
-[tool.codex-auth-switcher]
-subscription-profile = "%USERPROFILE%/.codex/autocode.config.toml"
+[project.optional-dependencies]
+dev = ["ruff>=0.17.2,<0.18"]
