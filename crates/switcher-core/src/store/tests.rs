@@ -37,6 +37,11 @@ command = "old-command"
 UNRELATED_AUTH_TOKEN = "synthetic-legacy-value"
 "#;
 const SUB_AUTH: &[u8] = br#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","id_token":"synthetic-id","account_id":"synthetic-account"}}"#;
+const IMPORTED_SUBSCRIPTION: &str = r#"model_provider = "openai"
+model = "imported-subscription-model"
+model_reasoning_effort = "high"
+"#;
+const IMPORTED_SUBSCRIPTION_AUTH: &[u8] = br#"{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-imported-access","refresh_token":"synthetic-imported-refresh","id_token":"synthetic-imported-id","account_id":"synthetic-imported-account"}}"#;
 const KEY: &str = "synthetic-api-test-value";
 
 struct Data {
@@ -148,6 +153,44 @@ fn leaving_mode_saves_refreshed_tokens_and_user_edits() -> anyhow::Result<()> {
     data.switch(Mode::Subscription)?;
     assert_eq!(data.store.status()?.effort, "high");
     assert_eq!(fs::read_to_string(data.store.paths.auth())?, changed_auth);
+    Ok(())
+}
+
+#[test]
+fn imported_profile_survives_leaving_the_same_active_mode() -> anyhow::Result<()> {
+    let data = Data::new()?;
+    data.initialize()?;
+    data.switch(Mode::Subscription)?;
+
+    let imported_config = data.store.paths.home.join("imported-subscription.toml");
+    let imported_auth = data
+        .store
+        .paths
+        .home
+        .join("imported-subscription-auth.json");
+    fs::write(&imported_config, IMPORTED_SUBSCRIPTION)?;
+    fs::write(&imported_auth, IMPORTED_SUBSCRIPTION_AUTH)?;
+    let status = data.store.initialize(ImportSources {
+        subscription_config: Some(imported_config),
+        subscription_auth: Some(imported_auth),
+        ..Default::default()
+    })?;
+    let imported = status
+        .modes
+        .iter()
+        .find(|mode| mode.mode == Mode::Subscription)
+        .ok_or_else(|| anyhow::anyhow!("subscription profile is missing"))?;
+    assert_eq!(imported.model, "imported-subscription-model");
+
+    data.switch(Mode::Api)?;
+    data.switch(Mode::Subscription)?;
+    let active = data.active()?;
+    let config = config::parse(&active.config)?;
+    assert_eq!(
+        config["model"].as_str(),
+        Some("imported-subscription-model")
+    );
+    assert_eq!(active.auth.as_deref(), Some(IMPORTED_SUBSCRIPTION_AUTH));
     Ok(())
 }
 

@@ -8,6 +8,32 @@ permissions:
   contents: read
 
 jobs:
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+      - name: Build and package Windows release
+        run: .\scripts\package-windows.ps1
+      - name: Test packaged CLI without host credentials
+        run: .\scripts\test-v2-headless.ps1
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-auth-switcher-windows-x64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
   test:
     runs-on: windows-latest
     strategy:

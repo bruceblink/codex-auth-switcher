@@ -2,7 +2,7 @@
 
 Windows 桌面 Codex 的订阅与 API key 模式切换工具。第一版使用 Python、Tkinter、tomlkit 和 Windows DPAPI。
 
-本仓库同时开发第二版：Rust + gpui-kit 独立桌面应用。第二版使用 AES-256-GCM 加密本地模式存档，密钥单独保存在用户状态目录。第一版说明保留在下文，作为已有实现和迁移参考。
+本仓库还包含第二版：Rust + gpui-kit 独立桌面应用。第二版使用 AES-256-GCM 加密本地模式存档，密钥单独保存在用户状态目录。第一版说明保留在下文，作为已有实现和迁移参考。
 
 工具同时恢复 `config.toml` 的模式参数和 `auth.json` 的认证。它不依赖、不修改 `autocode.config.toml`。配置中的 MCP、项目、插件、代理和其他共享设置继续使用当前值。
 
@@ -87,7 +87,7 @@ py -3 tests/gui_acceptance.py
 - [技术重评](docs/03-technology-review.md)
 - [第一版验证记录](docs/04-v1-validation.md)
 
-## 第二版（开发中）
+## 第二版
 
 第二版采用 Rust + gpui-kit 0.7.3。界面提供两种模式的状态、配置目录选择、TOML/JSON 来源导入、参数输入、变更预览和应用切换。文件读写和加密在后台执行。API key 输入框使用掩码，应用后清除输入。
 
@@ -105,6 +105,17 @@ cargo run --locked -- --command switch --target api --api-key-stdin
 
 标准输入只用于提供 key，不会将 key 放入命令参数。可以用 --demo --codex-home <新目录> 创建合成数据，并用 --isolated 阻止读取宿主环境变量。演示目录必须是新目录。
 
+第二版 headless 检查会在无原生窗口的测试环境中调度 GPUI 按钮事件，并用合成文件选择器覆盖导入流程。CI 和本机都可运行：
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+.\scripts\test-v2-headless.ps1
+```
+
 版本二的开发范围、验收条件与回滚边界见 [第二版开发计划](docs/05-v2-gpui-kit-development-plan.md)。egui/eframe、gpui-kit、Electron 等方案的评估见 [技术重评](docs/03-technology-review.md)。
+
+Release 构建完成后，可用 `scripts/package-windows.ps1` 生成 Windows 便携 ZIP 和 SHA-256 文件。压缩包包含独立可执行文件和 [V2 用户指南](docs/06-v2-user-guide.md)，运行时不要求 Python、Rust 或 Ramag。
 
 工具不发送远程请求、不自动登录、不自动关闭 Codex。当前仅支持 Windows 的文件认证存储，不支持系统钥匙串认证、跨账户迁移和无人值守登录。

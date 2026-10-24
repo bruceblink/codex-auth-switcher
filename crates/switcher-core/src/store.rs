@@ -473,15 +473,23 @@ impl Store {
         }
         let cipher = Cipher::open(&self.paths, false)?;
         let (mut state, vault_before) = self.state(&cipher)?;
-        state.profiles.insert(
-            leaving,
-            Profile {
-                config: config::fragment(&current)?,
-                auth: before.auth.as_ref().map(|a| STANDARD.encode(a)),
-                config_source: "latest active config".into(),
-                auth_source: "latest active authentication".into(),
-            },
-        );
+        let current_fragment = config::fragment(&current)?;
+        let current_auth = before.auth.as_ref().map(|auth| STANDARD.encode(auth));
+        let preserve_imported_profile = state.profiles.get(&leaving).is_some_and(|profile| {
+            profile.config_source != "latest active config"
+                && (profile.config != current_fragment || profile.auth != current_auth)
+        });
+        if !preserve_imported_profile {
+            state.profiles.insert(
+                leaving,
+                Profile {
+                    config: current_fragment,
+                    auth: current_auth,
+                    config_source: "latest active config".into(),
+                    auth_source: "latest active authentication".into(),
+                },
+            );
+        }
         let destination = state.profiles.get_mut(&target).ok_or(Error(
             "Target mode configuration is missing. Initialize or import its config.",
         ))?;
@@ -551,6 +559,9 @@ impl Store {
             return Err(Error("API input requires API mode."));
         }
         destination.config = fragment.to_string();
+        // Once a profile is applied, the active files become its authoritative snapshot.
+        destination.config_source = "latest active config".into();
+        destination.auth_source = "latest active authentication".into();
         let auth = decode_auth(destination.auth.as_deref())?;
         config::validate_profile(target, &destination.config, auth.as_deref())?;
         self.check_model(&fragment)?;

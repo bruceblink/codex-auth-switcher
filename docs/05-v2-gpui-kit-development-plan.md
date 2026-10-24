@@ -20,18 +20,38 @@
 - 密钥创建不覆盖，使用用户文件权限；密文认证记录版本和用途。写入和恢复保留加密记录，进程中断后可恢复，外部修改时不覆盖。
 - 密钥和真实认证不进入源码、测试、构建日志或 Git。正式验收只操作隔离数据。
 - 默认使用独立可执行文件，不要求 Python 或 Ramag 运行。Windows 为原生验收平台，其他平台只按实际 CI 结果报告。
+- Headless GPUI 测试实际调度初始化、导入、目录选择、刷新、模式选择、预览和应用按钮。文件选择器使用虚构来源，不启动系统对话框。
 
 ## 验证
 
 ```text
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo build --locked
+cargo test --workspace --locked
+cargo build --release --locked
+.\scripts\test-v2-headless.ps1
+.\scripts\package-windows.ps1
 ```
 
-测试覆盖第一版往返和故障场景，增加加密用途、缺失密钥、认证损坏、预览过期、资源上限和锁。保留第一版 Python 测试。使用 Computer Use 验收真实 GPUI Kit 窗口，检查状态、预览、应用、错误、掩码与缩放；不得把编译或 headless 测试当作原生验收。远程认证和旧会话 provider 迁移不适用。
+测试覆盖第一版往返和故障场景，增加加密用途、缺失密钥、认证损坏、预览过期、资源上限和锁。保留第一版 Python 测试。Headless GPUI 测试验证实际按钮事件与业务状态变化。另用 Computer Use 验收真实 GPUI Kit 窗口，检查错误提示、中文输入、键盘焦点、密钥掩码、窗口缩放和不同 DPI；headless 结果不替代原生验收。远程认证和旧会话 provider 迁移不适用。
 
 ## 回滚边界
 
 改动限于本仓库新增 Rust workspace、文档与 CI。真实 Codex 配置和第一版 DPAPI 数据不执行迁移或切换。新存档位于独立 `auth-switcher-v2` 子目录。第二版失败时继续使用第一版；不删除用户数据。验证通过后独立提交并推送。
+
+## 当前验收记录
+
+日期：2026-10-25。验收数据均为虚构数据。原生 GUI 使用仓库 `build/` 下的隔离目录；CLI 和单元测试使用临时目录。未操作用户的真实 Codex 配置。
+
+- `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` 和 `cargo test --workspace --locked` 通过。最终 Rust 测试共 23 项，其中核心 20 项、GPUI 与界面单元测试 3 项。
+- 第一版 Python 回归通过：Ruff 检查、格式检查、22 项 unittest 和 `compileall`。
+- 最终 Windows x64 Release 便携包位于 `build/acceptance-continued-20261025-05`。ZIP 大小为 7,161,792 字节（6.83 MiB），可执行文件大小为 19,164,160 字节。ZIP 只含可执行文件和用户指南；SHA-256 为 `f54e56ef6565bb8dd38a2202792d5842de729d0158357beb976882f389dad774`。可执行文件 SHA-256 为 `debe9234cb5dd3804a8bc196611c6dc13ec7d23676dbded5acce843901e4e3ae`，与已完成原生窗口验收的 `...-04` 包完全一致。PATH 仅含 `System32` 时，最终包通过 V2 CLI 隔离验收。
+- 使用 Computer Use 操作最终 `...-04` 包的真实窗口，验收初始化、TOML 原生选择器导入 API 与订阅配置、订阅认证导入、API 预览与应用、订阅回切、中文输入、密钥脱敏和应用后清空。导入 API 与订阅配置后，最终活动文件恢复为导入的订阅模型和认证，并保留共享设置。所有输入均为虚构数据，未连接远端服务。上一包 `...-03` 还完成 API 认证 JSON 选择器、无效 URL 提示、缺失密钥和损坏密文错误验收；两种存储错误均未修改测试文件哈希。
+- 使用最终 `...-04` 包的真实窗口选择一个已初始化的不同配置目录。目录字段更新后，窗口显示目标目录中的订阅模型与模式状态；返回原目录后，原有 API 模式档案仍可读取。
+- 原生导入回归发现并修复了一个模式往返问题：当前模式的显式导入档案会在离开该模式时被旧活动快照覆盖。修复后，新增核心测试并在最终 `...-04` 包中验证“导入订阅 TOML 与认证 JSON → 导入 API 配置 → 应用 API → 回切订阅”。回切后活动模型、推理级别和认证与导入数据一致。
+- 窗口已调整至 720×600 最小尺寸。主区可滚动，目标模式输入框和底部操作仍可访问；恢复为正常窗口尺寸后布局正常。
+- 上一构建包 `acceptance-continued-20261025-02` 的单次启动测量：从启动进程到创建原生窗口句柄为 745 毫秒。启动过程的 PATH 只含 `System32`。12 秒无操作采样中 CPU 为 0%，GPU 3D 计数器合计平均为 1.67%、峰值为 3.523%；工作集为 63.53 MiB，私有字节为 87.36 MiB。该数据只描述本机这一轮采样，不代表其他设备或冷文件缓存结果，也不是最终 `...-03` 包的单独测量。
+- 最终 `...-03` 便携包的原生窗口中，缺失密钥和损坏密文都显示中文错误。点击初始化后，工具没有重建密钥或密文；活动配置、认证和 `modes.enc` 哈希保持不变。缺失密钥场景中，`vault.key` 仍不存在。无效 URL 也显示中文验证错误，预览没有启用应用操作。
+- Windows 加密状态目录 ACL 只包含当前用户和 SYSTEM 的 FullControl 规则。
+- 当前原生窗口 DPI 为 96（100%）；此基线通过。150% 与 200% 尚未验收。当前显示设置未修改；完成这两项前不报告完整的 DPI 验收。
+- 尚未在全新 Windows 虚拟机中验收。Windows Sandbox 未安装，Hyper-V 当前没有虚拟机；PATH 限制测试不能替代干净机器验收。远端 GitHub Actions 尚未运行。
