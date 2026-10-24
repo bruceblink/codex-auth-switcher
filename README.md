@@ -82,5 +82,7 @@ py -3 tests/gui_acceptance.py
 
 - [第一版开发范围](docs/01-development-plan.md)
 - [认证模式恢复计划](docs/02-auth-mode-recovery-plan.md)
+- [技术重评](docs/03-technology-review.md)
+- [第一版验证记录](docs/04-v1-validation.md)
 
 工具不发送远程请求、不自动登录、不自动关闭 Codex。当前仅支持 Windows 的文件认证存储，不支持系统钥匙串认证、跨账户迁移和无人值守登录。
