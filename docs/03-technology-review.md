@@ -141,7 +141,7 @@ Electron 使用 Chromium 多进程模型，主进程运行于 Node.js。它提�
 5. **部分完成**：Windows Release 可执行文件、ZIP、单次启动时间、12 秒 CPU/GPU 采样、进程内存和缺失密钥/损坏密文行为已有本机记录。项目没有安装包，因此安装体积不适用。没有进行框架间性能比较。
 6. **部分完成**：便携包在 PATH 仅含 `System32` 时通过 CLI 和原生 GUI 验收。Windows Sandbox 未安装，Hyper-V 当前没有虚拟机。尚未在全新 Windows 虚拟机中运行；PATH 限制不能证明干净机器兼容性。
 
-托盘、代码签名和自动更新仍属于独立范围，不阻塞基础切换功能。远端 GitHub Actions 尚未运行。
+托盘、代码签名和自动更新仍属于独立范围，不阻塞基础切换功能。GitHub Actions run `40143033130` 已通过，覆盖 Rust 打包、隔离 CLI 与 Python 3.11/3.14 检查。
 
 如果后续测量发现打包体积、系统兼容或辅助技术支持不符合要求，再使用同一核心比较 egui/eframe 或 PySide6。
 
