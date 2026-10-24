@@ -40,7 +40,7 @@ egui 是即时模式 GUI（Immediate Mode GUI）库。eframe 提供窗口、输�
 对本项目的收益：
 
 - 模式列表、输入框、状态区和操作记录可以用紧凑的 Rust 状态模型实现。无需增加 Web 渲染进程或前后端通信层。
-- Rust 核心与界面可使用一套构建和测试工具。TOML、JSON、DPAPI 与文件恢复逻辑可以集中维护。
+- Rust 核心与界面可使用一套构建和测试工具。TOML、JSON、应用层加密与文件恢复逻辑可以集中维护，不依赖 Windows DPAPI。
 - eframe 提供 AccessKit 集成；egui_kittest 可按控件角色和名称驱动测试，也支持截图。不能据此省略 Windows 输入法、键盘焦点和读屏验收。
 - 官方 eframe 文档提供 wgpu 和 glow 后端，并说明 glow 可减少二进制体积。选择后端前仍需测试 Windows 图形驱动、远程桌面和实际包体积。
 
@@ -80,13 +80,13 @@ Electron 使用 Chromium 多进程模型，主进程运行于 Node.js。它提�
 
 - 表单、列表、路由、主题和变更预览可用常见 Web 技术完成，前端调试与自动化工具完整。
 - 窗口与托盘等能力有统一 API。需要复杂多页面管理界面时，开发效率较高。
-- Windows 可以使用系统支持的安全存储。当前 safeStorage 文档推荐异步接口，底层使用 DPAPI。
+- 可以在主进程实现与 Rust 路线相同的应用层加密格式，不要求使用 Electron safeStorage 或操作系统凭据存储。
 
 主要成本与实现边界：
 
 - 需要随应用分发 Chromium/Node。这个成本来自架构，但不能据此给出未经测量的内存或体积数字。对当前简单界面，其收益小于已有 Web 前端可复用的项目。
 - 配置文件与解密放在主进程或专用工作进程。渲染进程只接收脱敏状态，通过有限 IPC 请求检查、预览和应用。需要验证消息来源和参数，启用上下文隔离与沙箱，不给页面任意文件或 Node 权限。
-- Electron safeStorage 与第一版直接 DPAPI 密文不应被假定兼容。需要实现显式导入和升级验证，不能直接调用解密 API替换现有格式。
+- Electron 路线也需要明确密钥、密文格式和旧数据导入，不能因使用框架存储 API 就假定兼容第一版存档。
 - 保留 Python 子进程可以少重写核心，但会增加运行时、进程协议、取消和分发成本。这个项目不建议采用双运行时作为长期结构。
 - 主进程不能被同步文件操作和长任务阻塞。更新 Electron 与前端依赖也是持续维护工作。
 
@@ -102,24 +102,40 @@ Electron 使用 Chromium 多进程模型，主进程运行于 Node.js。它提�
 
 ## 跨平台范围
 
-框架支持多个操作系统，不代表认证工具已跨平台。第一版的加密存档绑定当前 Windows 用户，无法直接拿到 macOS 或 Linux 解密。第二版应区分：
+第二版按用户要求移除 DPAPI 绑定，统一使用应用层加密文件，不要求分别接入 Keychain 或 Secret Service。第一版已有 DPAPI 存档仍属于旧格式；跨平台还需要验证路径、权限、输入与分发。具体范围如下：
 
 | 部分 | 可共享内容 | 需要单独实现和验收的内容 |
 | --- | --- | --- |
 | 界面 | 模式列表、表单、预览、状态 | 字体、DPI、输入法、焦点与辅助技术 |
 | 配置 | TOML/JSON 解析、模式字段、校验 | 各平台 Codex 路径与文件权限 |
-| 认证 | 脱敏结果、状态模型和错误分类 | Windows DPAPI、macOS Keychain、Linux Secret Service 等存储选择 |
+| 认证 | 脱敏结果、状态模型、应用层加密格式与密钥管理 | 各平台用户目录权限、随机数来源与旧数据初始化 |
 | 文件恢复 | 加密恢复记录、冲突检测与回滚状态 | 文件锁、原子替换、断电与访问权限行为 |
 | 分发 | 版本信息和发布流程约定 | 安装包、签名、更新、卸载和干净机器测试 |
 
-第二版不能通过明文凭据回退来声称跨平台。非 Windows 平台在认证存储实现并验证前，应明确显示不支持。
+只有对应平台的读写、加密和恢复测试通过后，才标记为已支持。
+
+## 应用层加密存储
+
+第二版使用统一的加密格式，不把操作系统账户绑定或系统钥匙串作为必要条件。默认采用 AES-256-GCM 认证加密（Authenticated Encryption），使用成熟库实现，不自行设计加密算法。默认不增加主密码和每次切换解锁的操作。
+
+密钥与数据的保存方式：
+
+- 首次初始化时，使用操作系统安全随机数生成 256 位密钥，单独保存为用户数据目录中的 `vault.key`。密钥不写死在程序中，不进入项目、设置、日志或普通备份。
+- 模式状态保存为 `modes.enc`，未完成操作的恢复记录保存为 `pending.enc`。文件包含格式版本、随机 nonce、密文和认证标签；密钥不嵌入密文。每次加密生成新的 96 位随机 nonce，不能在同一密钥下复用。
+- 格式版本和记录类型作为附加认证数据，防止模式文件与恢复记录被混用。原子写入、外部修改检测和失败恢复继续保留。
+- 已有密文但密钥缺失、解密失败或认证标签不匹配时停止操作，不自动生成新密钥覆盖旧状态，不回退为明文保存。
+- 密钥和密文使用当前用户的数据目录及文件权限。复制存档到其他机器需要同时提供对应密钥；获得两者即可解密，因此这种方案不提供 DPAPI 的账户绑定保护。跨机复制也不保证订阅令牌仍然有效。
+
+加密范围是工具自身的模式存档和恢复记录。Codex 运行时读取的 `auth.json` 继续使用 Codex 要求的格式，不能替换为工具私有密文。该文件仍不进入项目或新建的明文认证备份。
+
+第一版 `modes.dpapi` 和 `pending.dpapi` 不直接作为第二版文件读取。迁移时优先从当前 Codex 配置、认证和有效备份重新初始化；需要保留仅存在于旧存档中的数据时，先在原 Windows 用户下完成一次性转换。新运行时不要求保留 DPAPI 兼容模块。旧版恢复记录必须先由第一版处理，不能在未完成写入时直接切换存储格式。
 
 ## 候选验证与迁移条件
 
 当前回合只评估，不创建 Rust 项目或迁移运行时。若决定启动 egui 第二版，应先保存独立开发计划，再执行下列范围：
 
 1. 冻结第一版可观察行为和 22 个测试样例。迁移核心到 Rust，TOML 使用保留格式的结构化编辑库，例如 toml_edit，JSON 使用 serde。
-2. Windows 使用 DPAPI 兼容层读取现有加密模式状态。验证导入失败时不修改原文件。保留模式字段白名单、输入优先级、外部冲突检测与恢复记录。
+2. 实现独立的应用层加密模块和本地随机密钥文件。验证加密往返、错误密钥、密文损坏、缺失密钥和中断恢复。从已有 Codex 文件初始化新存档；不要求运行时读取 DPAPI。保留模式字段白名单、输入优先级、外部冲突检测与恢复记录。
 3. 先用 egui 构建模式列表、参数表单、变更预览和操作记录。界面只提交动作，文件写入和加密在独立业务层执行。
 4. 完成原有故障注入样例，再验收真实窗口、中文输入、键盘操作、密钥掩码、100%/150%/200% DPI 和窗口缩放。
 5. 在同一 Windows 环境测量 Release 可执行文件、压缩包与安装体积、冷启动、空闲 CPU/GPU、进程内存，以及恢复失败的实际行为。比较数据时使用同一字体、资源与业务流程。
@@ -139,3 +155,4 @@ Electron 使用 Chromium 多进程模型，主进程运行于 Node.js。它提�
 - [Electron 自动化测试](https://www.electronjs.org/docs/latest/tutorial/automated-testing)、[打包](https://www.electronjs.org/docs/latest/tutorial/tutorial-packaging)、[safeStorage](https://www.electronjs.org/docs/latest/api/safe-storage)：测试、分发及 Windows 加密。
 - [Qt Widgets](https://doc.qt.io/qtforpython-6/PySide6/QtWidgets/index.html)、[PySide6 部署](https://doc.qt.io/qtforpython-6/deployment/deployment-pyside6-deploy.html)、[Qt for Python 许可](https://doc.qt.io/qtforpython-6/licenses.html)、[PyQt](https://riverbankcomputing.com/software/pyqt/)：Python 桌面备选。
 - [Tauri 2](https://v2.tauri.app/start/)：系统 WebView 路线。
+- [RustCrypto AES-GCM](https://docs.rs/aes-gcm/latest/aes_gcm/)：认证加密接口、密钥与 nonce 要求。

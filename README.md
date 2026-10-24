@@ -85,4 +85,6 @@ py -3 tests/gui_acceptance.py
 - [技术重评](docs/03-technology-review.md)
 - [第一版验证记录](docs/04-v1-validation.md)
 
+第二版规划采用 Rust + egui/eframe，并改用应用层加密文件与独立本地密钥，移除 DPAPI 绑定。当前第一版实现仍使用 DPAPI，迁移尚未执行，详见技术重评。
+
 工具不发送远程请求、不自动登录、不自动关闭 Codex。当前仅支持 Windows 的文件认证存储，不支持系统钥匙串认证、跨账户迁移和无人值守登录。
