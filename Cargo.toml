@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/switcher-core", "crates/switcher-desktop"]
+default-members = ["crates/switcher-desktop"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.91"
+repository = "https://github.com/bruceblink/codex-auth-switcher"
+
+[workspace.dependencies]
+gpui-kit = "=0.7.3"
+aes-gcm = "0.10"
+anyhow = "1"
+base64 = "0.22"
+chrono = "0.4"
+directories = "6"
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+toml_edit = "0.25"
+url = "2"
+zeroize = { version = "1", features = ["derive"] }
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+opt-level = "s"
+strip = true
+lto = "thin"

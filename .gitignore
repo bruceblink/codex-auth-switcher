@@ -15,3 +15,6 @@ auth.json
 auth.json.*
 *.dpapi
 .codex/
+/target/
+*.enc
+vault.key

@@ -2,6 +2,8 @@
 
 Windows 桌面 Codex 的订阅与 API key 模式切换工具。第一版使用 Python、Tkinter、tomlkit 和 Windows DPAPI。
 
+本仓库同时开发第二版：Rust + gpui-kit 独立桌面应用。第二版使用 AES-256-GCM 加密本地模式存档，密钥单独保存在用户状态目录。第一版说明保留在下文，作为已有实现和迁移参考。
+
 工具同时恢复 `config.toml` 的模式参数和 `auth.json` 的认证。它不依赖、不修改 `autocode.config.toml`。配置中的 MCP、项目、插件、代理和其他共享设置继续使用当前值。
 
 ## 安装与启动
@@ -85,6 +87,24 @@ py -3 tests/gui_acceptance.py
 - [技术重评](docs/03-technology-review.md)
 - [第一版验证记录](docs/04-v1-validation.md)
 
-第二版规划采用 Rust + egui/eframe，并改用应用层加密文件与独立本地密钥，移除 DPAPI 绑定。当前第一版实现仍使用 DPAPI，迁移尚未执行，详见技术重评。
+## 第二版（开发中）
+
+第二版采用 Rust + gpui-kit 0.7.3。界面提供两种模式的状态、配置目录选择、TOML/JSON 来源导入、参数输入、变更预览和应用切换。文件读写和加密在后台执行。API key 输入框使用掩码，应用后清除输入。
+
+第二版存档位于 .codex/auth-switcher-v2/。modes.enc 和 pending.enc 使用 AES-256-GCM。vault.key 与密文分开保存，Windows 状态目录仅允许当前用户和 SYSTEM 访问；密钥缺失或验证失败时，工具停止并保留存档。Codex 读取的 auth.json 仍使用 Codex 格式。第一版 DPAPI 文件不会由第二版读取或覆盖。
+
+在 PowerShell 中运行：
+
+```powershell
+cargo run --locked
+cargo run --locked -- --command status
+cargo run --locked -- --command initialize
+cargo run --locked -- --command preview --target api
+cargo run --locked -- --command switch --target api --api-key-stdin
+```
+
+标准输入只用于提供 key，不会将 key 放入命令参数。可以用 --demo --codex-home <新目录> 创建合成数据，并用 --isolated 阻止读取宿主环境变量。演示目录必须是新目录。
+
+版本二的开发范围、验收条件与回滚边界见 [第二版开发计划](docs/05-v2-gpui-kit-development-plan.md)。egui/eframe、gpui-kit、Electron 等方案的评估见 [技术重评](docs/03-technology-review.md)。
 
 工具不发送远程请求、不自动登录、不自动关闭 Codex。当前仅支持 Windows 的文件认证存储，不支持系统钥匙串认证、跨账户迁移和无人值守登录。
