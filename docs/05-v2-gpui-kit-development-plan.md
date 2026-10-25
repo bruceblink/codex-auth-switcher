@@ -34,7 +34,7 @@ cargo build --release --locked
 .\scripts\package-windows.ps1
 ```
 
-测试覆盖第一版往返和故障场景，增加加密用途、缺失密钥、认证损坏、预览过期、资源上限和锁。保留第一版 Python 测试。Headless GPUI 测试验证实际按钮事件与业务状态变化。另用 Computer Use 验收真实 GPUI Kit 窗口，检查错误提示、中文输入、键盘焦点、密钥掩码、窗口缩放和不同 DPI；headless 结果不替代原生验收。远程认证和旧会话 provider 迁移不适用。
+测试覆盖第一版往返和故障场景，增加加密用途、缺失密钥、认证损坏、预览过期、资源上限和锁。保留第一版 Python 测试。Headless GPUI 测试验证实际按钮事件与业务状态变化。另用 Computer Use 在真实 Windows 窗口验收错误提示、中文输入、键盘焦点、密钥掩码、窗口尺寸和滚动。验收保持当前显示设置：2560×1440 分辨率、100% 缩放（96 DPI）；不更改分辨率或缩放。150% 与 200% 缩放不属于本次验收范围。Headless 结果不替代原生验收。远程认证和旧会话 provider 迁移不适用。
 
 ## 回滚边界
 
@@ -58,6 +58,5 @@ cargo build --release --locked
 - 上一构建包 `acceptance-continued-20261025-02` 的单次启动测量：从启动进程到创建原生窗口句柄为 745 毫秒。启动过程的 PATH 只含 `System32`。12 秒无操作采样中 CPU 为 0%，GPU 3D 计数器合计平均为 1.67%、峰值为 3.523%；工作集为 63.53 MiB，私有字节为 87.36 MiB。该数据只描述本机这一轮采样，不代表其他设备或冷文件缓存结果，也不是最终 `...-03` 包的单独测量。
 - 最终 `...-05` 便携包通过了本机 CLI、原生窗口和存档损坏验收。无效 URL 显示中文验证错误，预览不会启用应用操作。
 - Windows 加密状态目录 ACL 只包含当前用户和 SYSTEM 的 FullControl 规则。
-- 当前原生窗口 DPI 为 96（100%）；此基线通过。150% 与 200% 尚未验收。当前显示设置未修改；完成这两项前不报告完整的 DPI 验收。
-- 尚未在全新 Windows 虚拟机中验收。此前检查未发现可用的 Windows Sandbox，Hyper-V 中没有虚拟机；PATH 限制测试不能替代干净机器验收。
-- GitHub Actions run `40143033130` 已在提交 `d788eb801c27768ebea65bb9074fc812858ab2f3` 上通过。Rust 格式、Clippy、测试、Release 打包和隔离 CLI 检查通过；Python 3.11 与 3.14 检查通过。
+- 当前 Windows 显示设置为 2560×1440 分辨率和 100% 缩放；原生窗口 DPI 为 96。此基线的功能与窗口尺寸验收通过。本次未修改显示设置；150% 与 200% 缩放不在验收范围内。
+- GitHub Actions run `40146530089` 已在提交 `35be2d1a785148aa4f2ae5a45edeae10f31e023b` 的新建 `windows-latest` runner 上通过。Runner 启动 Release GUI 原生窗口，并通过 Windows UI Automation 完成初始化、目标选择、预览、API 应用和订阅恢复；隔离 CLI、Rust、Release 打包、Python 3.11/3.14 也通过。这提供了新 Windows runner 的实际 GUI 验收。当前电脑没有 Windows Sandbox，也没有 Hyper-V 虚拟机。
