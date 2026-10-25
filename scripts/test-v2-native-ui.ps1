@@ -225,16 +225,21 @@ function Read-ActiveFiles {
     return [pscustomobject]@{ mode = $mode; auth_mode = $mode; model = $model }
 }
 
-function Wait-ForMode([string]$Mode) {
+function Wait-ForMode([string]$Mode, [string]$ExpectedModel) {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    $status = $null
     while ([DateTime]::UtcNow -lt $deadline) {
         $status = Read-ActiveFiles
-        if ($null -ne $status -and $status.mode -eq $Mode -and $status.auth_mode -eq $Mode) {
+        if ($null -ne $status -and
+            $status.mode -eq $Mode -and
+            $status.auth_mode -eq $Mode -and
+            $status.model -eq $ExpectedModel) {
             return $status
         }
         Start-Sleep -Milliseconds 100
     }
-    throw "The native GUI did not apply mode '$Mode'."
+    $actual = if ($null -eq $status) { "unavailable" } else { "$($status.mode)/$($status.model)" }
+    throw "The native GUI did not apply mode '$Mode' with model '$ExpectedModel'; last observed '$actual'."
 }
 
 try {
@@ -346,7 +351,7 @@ public static class NativeUiInput
     Click-NativeButton "预览变更"
     $null = Wait-ForButton "应用切换"
     Click-NativeButton "应用切换"
-    $apiStatus = Wait-ForMode "api"
+    $apiStatus = Wait-ForMode "api" "demo-api-model"
     if ($apiStatus.model -ne "demo-api-model") {
         throw "The native GUI applied the wrong API model."
     }
@@ -355,7 +360,7 @@ public static class NativeUiInput
     Click-NativeButton "预览变更"
     $null = Wait-ForButton "应用切换"
     Click-NativeButton "应用切换"
-    $subscriptionStatus = Wait-ForMode "subscription"
+    $subscriptionStatus = Wait-ForMode "subscription" "demo-subscription-model"
     if ($subscriptionStatus.model -ne "demo-subscription-model") {
         throw "The native GUI did not restore the synthetic subscription model."
     }
