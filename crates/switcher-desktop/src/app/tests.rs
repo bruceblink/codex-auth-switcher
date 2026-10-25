@@ -15,7 +15,7 @@ use std::{
 use switcher_core::{Mode, Paths, Store};
 
 fn test_dialogs(
-    files: Vec<(bool, PathBuf)>,
+    files: Vec<(bool, Option<PathBuf>)>,
     folders: Vec<PathBuf>,
 ) -> (FileDialogs, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let files = Arc::new(files);
@@ -34,7 +34,7 @@ fn test_dialogs(
             let selected = files
                 .get(index)
                 .filter(|(expected_auth, _)| *expected_auth == auth)
-                .map(|(_, path)| path.clone());
+                .and_then(|(_, path)| path.clone());
             Box::pin(async move { selected }) as DialogFuture
         })
     };
@@ -192,10 +192,11 @@ cli_auth_credentials_store = "file"
 
     let (dialogs, file_calls, folder_calls) = test_dialogs(
         vec![
-            (false, api_config),
-            (true, api_auth),
-            (false, subscription_config),
-            (true, subscription_auth),
+            (false, Some(api_config)),
+            (true, Some(api_auth)),
+            (false, Some(subscription_config)),
+            (true, Some(subscription_auth)),
+            (true, None),
         ],
         vec![browsed_home.clone(), home.clone()],
     );
@@ -380,6 +381,56 @@ cli_auth_credentials_store = "file"
         Err(error) => panic!("API auth was not restored: {error}"),
     };
     assert!(api_auth.contains("synthetic-ui-key"));
+
+    let before_cancel = [
+        match fs::read(store.paths.config()) {
+            Ok(contents) => contents,
+            Err(error) => panic!("config could not be read before picker cancellation: {error}"),
+        },
+        match fs::read(store.paths.auth()) {
+            Ok(contents) => contents,
+            Err(error) => panic!("auth could not be read before picker cancellation: {error}"),
+        },
+        match fs::read(store.paths.vault()) {
+            Ok(contents) => contents,
+            Err(error) => {
+                panic!("mode state could not be read before picker cancellation: {error}")
+            }
+        },
+        match fs::read(store.paths.key()) {
+            Ok(contents) => contents,
+            Err(error) => panic!("vault key could not be read before picker cancellation: {error}"),
+        },
+    ];
+    click(cx, window_handle, "import-auth");
+    assert_eq!(file_calls.load(Ordering::SeqCst), 5);
+    assert!(!content.read_with(cx, |view, _| view.busy));
+    assert!(content.read_with(cx, |view, _| view.prepared.is_none()));
+    let after_cancel = [
+        fs::read(store.paths.config()),
+        fs::read(store.paths.auth()),
+        fs::read(store.paths.vault()),
+        fs::read(store.paths.key()),
+    ];
+    for (index, result) in after_cancel.into_iter().enumerate() {
+        let contents = match result {
+            Ok(contents) => contents,
+            Err(error) => {
+                panic!("local file {index} could not be read after cancellation: {error}")
+            }
+        };
+        assert_eq!(
+            contents, before_cancel[index],
+            "local file {index} changed after cancel"
+        );
+    }
+    click(cx, window_handle, "refresh");
+    let refreshed = match store.status() {
+        Ok(status) => status,
+        Err(error) => panic!("status could not be read after picker cancellation: {error}"),
+    };
+    assert_eq!(refreshed.mode, Some(Mode::Api));
+    assert!(profile(&store, Mode::Api).ready);
 }
 
 #[test]
