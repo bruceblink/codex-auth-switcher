@@ -50,9 +50,6 @@ jobs:
       - name: Build and package Windows release
         if: runner.os == 'Windows'
         run: .\scripts\package-windows.ps1
-      - name: Test packaged CLI without host credentials
-        if: runner.os == 'Windows'
-        run: .\scripts\test-v2-headless.ps1
       - name: Test packaged native Windows UI
         if: runner.os == 'Windows'
         run: .\scripts\test-v2-native-ui.ps1 -ExecutablePath .\target\release\codex-auth-switcher.exe

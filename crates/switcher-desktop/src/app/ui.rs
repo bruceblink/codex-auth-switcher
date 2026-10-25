@@ -1,8 +1,8 @@
 use eframe::egui::{self, Color32, RichText, TextEdit};
 
 use super::{
-    ImportSources, Mode, PreparedSwitch, SwitcherApp,
-    format::{masked_hint, mode_name},
+    ImportSources, Mode, PreparedSwitch, ReasoningLevel, SwitcherApp,
+    format::{auth_source_name, masked_hint, mode_name},
 };
 
 impl SwitcherApp {
@@ -17,10 +17,10 @@ impl SwitcherApp {
         ui.horizontal(|ui| {
             ui.heading("Codex Auth Switcher");
             ui.label("认证与模型配置");
-            if self.demo {
-                ui.colored_label(Color32::from_rgb(39, 100, 166), "隔离演示");
-            }
             ui.label("v0.2.0");
+            if ui.button("模型目录").clicked() {
+                self.catalog_window_open = true;
+            }
         });
         ui.separator();
         egui::ScrollArea::vertical()
@@ -176,14 +176,19 @@ impl SwitcherApp {
                                 ui.end_row();
                             }
                         });
-                    ui.small(if prepared.preview.auth_changes {
-                        "认证：替换为目标模式的已保存认证"
+                    if prepared.preview.auth_changes {
+                        ui.small("认证：替换为目标认证");
+                        ui.small(format!(
+                            "认证来源：{}",
+                            auth_source_name(&prepared.preview.auth_source)
+                        ));
                     } else {
-                        "认证：无变化"
-                    });
+                        ui.small("认证：无变化");
+                    }
                 }
             });
 
+        self.model_catalog_editor(ui.ctx(), enabled);
         ui.separator();
         ui.small("应用前关闭 Codex。应用后重启，并新建会话。");
         ui.horizontal_wrapped(|ui| {
@@ -269,6 +274,182 @@ impl SwitcherApp {
             }
         });
     }
+
+    fn model_catalog_editor(&mut self, ctx: &egui::Context, enabled: bool) {
+        let mut open = self.catalog_window_open;
+        egui::Window::new("Codex 模型目录")
+            .default_size([760.0, 560.0])
+            .resizable(true)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let load_label = if self.model_catalog.is_some() {
+                        "重新读取 models-codex.json"
+                    } else {
+                        "读取 models-codex.json"
+                    };
+                    if ui
+                        .add_enabled(enabled && !self.catalog_dirty, egui::Button::new(load_label))
+                        .clicked()
+                    {
+                        self.load_model_catalog();
+                    }
+                    if ui
+                        .add_enabled(enabled && self.model_catalog.is_some(), egui::Button::new("复制当前模型"))
+                        .clicked()
+                    {
+                        self.add_model_from_selected();
+                    }
+                    if ui
+                        .add_enabled(
+                            enabled && self.catalog_dirty,
+                            egui::Button::new("保存模型选项"),
+                        )
+                        .clicked()
+                    {
+                        self.save_model_catalog();
+                    }
+                });
+
+                ui.small("只编辑当前配置目录中的模型选项。新增条目会复制当前模型的功能参数，请确认它符合新模型的实际能力。");
+                let mut selected_changed = false;
+                let (catalog_slot, selected_slot) =
+                    (&mut self.model_catalog, &mut self.selected_model);
+                if let Some(catalog) = catalog_slot.as_mut() {
+                    ui.add(egui::Label::new(format!("文件：{}", catalog.path)).wrap());
+                    let selected_label = catalog
+                        .models
+                        .get(*selected_slot)
+                        .map(|model| format!("{} ({})", model.display_name, model.slug))
+                        .unwrap_or_else(|| "选择模型".into());
+                    egui::ComboBox::from_label("模型")
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            for (index, model) in catalog.models.iter().enumerate() {
+                                let response = ui.selectable_value(
+                                    selected_slot,
+                                    index,
+                                    format!("{} ({})", model.display_name, model.slug),
+                                );
+                                selected_changed |= response.changed();
+                            }
+                        });
+
+                    if let Some(model) = catalog.models.get_mut(*selected_slot) {
+                        if selected_changed {
+                            self.reasoning_levels_text = reasoning_levels_text(model);
+                        }
+                        let mut changed = false;
+                        ui.horizontal(|ui| {
+                            let label = ui.label("模型 ID");
+                            changed |= ui
+                                .add_enabled(
+                                    enabled,
+                                    TextEdit::singleline(&mut model.slug)
+                                        .desired_width(f32::INFINITY),
+                                )
+                                .labelled_by(label.id)
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            let label = ui.label("显示名称");
+                            changed |= ui
+                                .add_enabled(
+                                    enabled,
+                                    TextEdit::singleline(&mut model.display_name)
+                                        .desired_width(f32::INFINITY),
+                                )
+                                .labelled_by(label.id)
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            let label = ui.label("可见性");
+                            changed |= ui
+                                .add_enabled(
+                                    enabled,
+                                    TextEdit::singleline(&mut model.visibility)
+                                        .desired_width(f32::INFINITY),
+                                )
+                                .labelled_by(label.id)
+                                .changed();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("优先级");
+                            changed |= ui
+                                .add_enabled(enabled, egui::DragValue::new(&mut model.priority))
+                                .changed();
+                        });
+                        egui::ComboBox::from_id_salt(("default-reasoning", *selected_slot))
+                            .selected_text(format!("默认推理级别：{}", model.default_reasoning_level))
+                            .show_ui(ui, |ui| {
+                                for level in &model.supported_reasoning_levels {
+                                    changed |= ui
+                                        .selectable_value(
+                                            &mut model.default_reasoning_level,
+                                            level.effort.clone(),
+                                            &level.effort,
+                                        )
+                                        .changed();
+                                }
+                            });
+                        ui.horizontal(|ui| {
+                            let label = ui.label("支持的推理级别");
+                            let response = ui
+                                .add_enabled(
+                                    enabled,
+                                    TextEdit::singleline(&mut self.reasoning_levels_text)
+                                        .desired_width(f32::INFINITY),
+                                )
+                                .labelled_by(label.id);
+                            if response.changed() {
+                                update_reasoning_levels(model, &self.reasoning_levels_text);
+                                changed = true;
+                            }
+                        });
+                        ui.small("推理级别用英文逗号分隔。保留已有说明；新增级别的说明为空。");
+                        if changed {
+                            self.catalog_dirty = true;
+                        }
+                    }
+                } else {
+                    ui.small("读取模型目录后可编辑模型名称、可见性、优先级和推理级别。");
+                }
+            });
+        self.catalog_window_open = open;
+    }
+}
+
+fn reasoning_levels_text(model: &switcher_core::CodexModel) -> String {
+    model
+        .supported_reasoning_levels
+        .iter()
+        .map(|level| level.effort.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn update_reasoning_levels(model: &mut switcher_core::CodexModel, text: &str) {
+    let old_levels = std::mem::take(&mut model.supported_reasoning_levels);
+    let mut next = Vec::new();
+    for effort in text
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(existing) = old_levels.iter().find(|level| level.effort == effort) {
+            next.push(existing.clone());
+        } else {
+            next.push(ReasoningLevel::new(effort.to_string(), String::new()));
+        }
+    }
+    if !next
+        .iter()
+        .any(|level| level.effort == model.default_reasoning_level)
+        && let Some(first) = next.first()
+    {
+        model.default_reasoning_level = first.effort.clone();
+    }
+    model.supported_reasoning_levels = next;
 }
 
 fn text_field(

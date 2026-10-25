@@ -18,9 +18,18 @@
 
 在目标模式区域，使用配置按钮导入 TOML，使用用户按钮导入认证 JSON。导入只更新加密模式存档，不会立即切换当前认证。
 
-切换时，工具会保存当前活动配置和认证。显式导入的配置与认证会保留在目标模式中。即使目标模式当前正在使用，切换到另一模式再切回时仍会应用导入的数据。导入不会立即切换当前认证。
+切换时，工具会把当前模式参数和认证保存到加密模式存档。若配置发生变化，工具会创建 `config.toml.bak-*`，其中只包含当前模式参数和选中的 provider，不包含共享设置或凭据。活动 `config.toml` 中的 MCP、项目、插件和 shell 环境设置会继续保留。显式导入的配置与认证会保留在目标模式中。即使目标模式当前正在使用，切换到另一模式再切回时仍会应用导入的数据。导入不会立即切换当前认证。
 
-API key 输入框会遮盖输入内容，并显示首尾提示。应用切换后，输入框会清空。API key 不能放在命令行参数中。
+API key 输入框会遮盖输入内容，并显示首尾提示。程序只使用输入框里的密钥或已保存认证，不读取 `AUTOCODE_API_KEY` 或 provider `env_key` 指向的环境变量。输入框密钥成功应用后，程序会将它写入 Windows 当前用户的持久环境变量 `AUTOCODE_API_KEY`。切换失败时不会写入。预览会显示认证来源，但不会显示密钥。应用切换后，输入框会清空。
+
+## 管理 Codex 模型选项
+
+1. 点击顶部的“模型目录”按钮，再读取当前配置目录中的 `models-codex.json`。
+2. 选择模型，编辑模型 ID、显示名称、可见性、优先级、默认推理级别和支持的推理级别。
+3. 点击“复制当前模型”可新增条目。新条目会复制所选模型的其他能力参数；修改模型 ID 后，请确认这些能力参数与新模型相符。
+4. 点击“保存模型选项”。工具会先创建 `models-codex.json.bak-*` 备份，再原子写入文件。
+
+工具会保留模型文件中未提供编辑控件的字段。若 Codex 或其他程序在读取后改动该文件，保存会停止；重新读取后再编辑。保存后重启 Codex，让模型选择菜单重新读取模型目录。
 
 ## 本地数据和备份
 
@@ -29,35 +38,6 @@ API key 输入框会遮盖输入内容，并显示首尾提示。应用切换后
 此加密只保护工具自己的模式存档。复制 `vault.key` 和密文后可以解密存档，所以请按敏感数据管理备份。Codex 使用的 `auth.json` 仍保持 Codex 格式。工具不会修改 `autocode.config.toml`，也不会改变 MCP、项目或插件设置。
 
 第一版 DPAPI 存档不会由当前版本读取或覆盖。若检测到旧版未完成的 `pending.dpapi` 写入，先保留当前 Codex 文件。需要恢复时，从 Git 历史提交 `d2bb002` 取回对应历史版本，在原 Windows 用户账户下恢复该记录。不要用当前程序尝试读取旧存档，也不要删除旧存档。
-
-## 命令行
-
-先在一个不存在的临时目录创建虚构数据：
-
-```powershell
-$demoHome = Join-Path $env:TEMP "codex-auth-switcher-demo"
-.\codex-auth-switcher.exe --demo --isolated --codex-home $demoHome --command initialize
-```
-
-后续 CLI 操作继续指定这个演示目录。预览和切换只会修改虚构配置：
-
-```powershell
-.\codex-auth-switcher.exe --isolated --codex-home $demoHome --command status
-.\codex-auth-switcher.exe --isolated --codex-home $demoHome --command preview --target api
-"synthetic-test-only-key" | .\codex-auth-switcher.exe --isolated --codex-home $demoHome --command switch --target api --api-key-stdin
-```
-
-不要将真实 key 放进命令行参数、脚本或日志。CLI 输出只包含配置摘要和切换结果。不要对真实 Codex 目录执行 `--command switch`，除非你确实要立即切换该目录。
-
-## 隔离演示
-
-`--demo` 只会创建虚构配置。目标目录必须不存在；`--isolated` 会忽略宿主环境中的 key：
-
-```powershell
-.\codex-auth-switcher.exe --demo --isolated --codex-home $demoHome
-```
-
-关闭演示程序后，演示目录仍保留，避免程序替用户删除数据。需要新演示时，指定另一个不存在的目录。
 
 ## 卸载
 

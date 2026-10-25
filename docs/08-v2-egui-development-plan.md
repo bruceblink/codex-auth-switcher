@@ -4,7 +4,7 @@
 
 ## 范围
 
-当前分支只维护 Rust 实现。桌面界面使用 egui/eframe 0.37.0；CLI 和业务核心继续使用独立的 `switcher-core` crate。gpui-kit 的运行依赖、GPUI UI 源码和 GPUI 专用测试已移除。GPUI 的旧验收记录保留在 [历史计划](05-v2-gpui-kit-development-plan.md)。Python 第一版的源码、测试、入口、配置和 CI 已删除。
+当前分支只维护 Rust 图形界面。桌面界面使用 egui/eframe 0.37.0；业务核心由独立的 `switcher-core` crate 提供。CLI 模块、CLI 专用参数和测试入口已删除。Release 图形程序使用 Windows GUI 子系统，不会打开终端窗口。gpui-kit 的运行依赖、GPUI UI 源码和 GPUI 专用测试已移除。GPUI 的旧验收记录保留在 [历史计划](05-v2-gpui-kit-development-plan.md)。Python 第一版的源码、测试、入口、配置和 CI 已删除。
 
 egui 应用继续提供模式初始化、补齐、来源导入、目录选择、刷新、目标选择、API 参数输入、脱敏预览和应用切换。文件与加密操作在工作线程运行。桌面渲染使用 glow；Windows x64 是当前发布目标。eframe 0.37.0 将 MSRV 从 1.91 提高到 1.95。
 
@@ -14,11 +14,12 @@ egui 应用继续提供模式初始化、补齐、来源导入、目录选择、
 - 切换过程保留 MCP、项目、插件等共享配置。工具不读取或修改 `autocode.config.toml`。
 - 导入的 TOML 与 JSON 只更新加密模式存档。导入不会直接替换活动配置或认证。
 - 预览不显示 key、令牌或共享配置正文。应用前检查预览涉及的文件是否已变化。
+- 配置备份只保存当前模式参数和选中 provider，不复制共享设置或凭据；活动配置继续保留共享设置。
 - API key 输入使用密码遮罩。成功或失败结束后清除输入缓冲区。
 - 后台操作失败时恢复文件状态；外部文件变化时停止覆盖。
 - Headless 测试实际驱动 egui 按钮，并检查合成目录内的文件结果。
 - Windows 原生验收使用 Computer Use 操作真实窗口。DPI、输入法、文件对话框和窗口尺寸证据与 Headless 测试分开记录。
-- CI 在 Windows、Linux、macOS 运行格式检查、Clippy 和 workspace 测试。Linux runner 安装 egui/eframe 的 X11、Wayland、字体和 OpenGL 开发依赖。只有 Windows runner 构建便携包并执行 Windows CLI 与原生窗口检查。
+- CI 在 Windows、Linux、macOS 运行格式检查、Clippy 和 workspace 测试。Linux runner 安装 egui/eframe 的 X11、Wayland、字体和 OpenGL 开发依赖。只有 Windows runner 构建便携包并执行原生窗口检查。
 - 发布包不依赖宿主 Python、Rust 或包管理器环境。自动化测试不读取真实 Codex 认证。
 
 ## 验证命令
@@ -27,7 +28,6 @@ egui 应用继续提供模式初始化、补齐、来源导入、目录选择、
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-.\scripts\test-v2-headless.ps1
 .\scripts\package-windows.ps1
 .\scripts\test-v2-native-ui.ps1
 ```
@@ -36,10 +36,10 @@ cargo test --workspace --locked
 
 桌面代码只在一个 `switcher-desktop` crate 中维护。`app.rs` 处理界面状态和后台任务，`app/ui.rs` 绘制控件，`app/format.rs` 显示模式摘要和安全错误，`app/tests.rs` 验证按钮流程。独立的 `switcher-core` crate 不依赖桌面框架。
 
-100% 缩放、96 DPI 的真实 Windows 窗口已通过初始化和 API/订阅往返。模式、模型、认证和共享配置已由 CLI 与隔离测试目录确认。真实窗口中的文件选择器已打开；本轮 Computer Use 在文件对话框句柄失效后停止，尚未完成实际选择和导入。因此，完整原生文件导入仍是待验收项。Headless 测试已实际读取合成 TOML 和认证 JSON 并验证导入结果。
+真实 Windows Release 窗口已在隔离的临时 `CODEX_HOME` 中通过原生文件选择器导入合成 TOML 和认证 JSON，并完成 API 切换、订阅恢复和共享设置检查。磁盘检查确认当前认证、模式参数和状态提示一致；配置备份不含共享 shell 令牌或 API key。测试未修改真实 Codex 配置，也未验证远程认证服务。
 
 ## 数据边界和回滚
 
-测试只操作仓库 `build/` 下的新合成目录或系统临时目录。不会把真实凭据写入测试、日志、源码或 Git。第一版 DPAPI 存档不迁移、不覆盖、不删除。当前存档格式、CLI 参数和 `switcher-core` 的持久化逻辑不因更换 GUI 框架而改变。
+测试只操作仓库 `build/` 下的新合成目录或系统临时目录。不会把真实凭据写入测试、日志、源码或 Git。第一版 DPAPI 存档不迁移、不覆盖、不删除。当前存档格式和 `switcher-core` 的持久化逻辑不因更换 GUI 框架而改变。
 
 egui 是当前唯一维护的桌面实现。未来若要更换框架，应作为一次明确迁移处理，不在当前 workspace 中并行保留第二套实现。回滚不修改 `switcher-core` 或用户数据。当前未提交、未推送任何框架变更。

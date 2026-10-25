@@ -25,6 +25,19 @@ fn user_facing_errors_preserve_recovery_guidance() {
     );
 }
 
+#[test]
+fn authentication_source_labels_are_safe_and_localized() {
+    assert_eq!(super::format::auth_source_name("user input"), "界面输入");
+    assert_eq!(
+        super::format::auth_source_name("environment"),
+        "旧存档环境来源"
+    );
+    assert_eq!(
+        super::format::auth_source_name("custom-api-auth.json"),
+        "custom-api-auth.json"
+    );
+}
+
 /// Builds the same immediate-mode controls as the native window with synthetic files.
 fn harness_for(
     home: PathBuf,
@@ -36,7 +49,6 @@ fn harness_for(
     };
     let app = Rc::new(RefCell::new(SwitcherApp::with_dialogs(
         Store::isolated(paths),
-        true,
         dialogs,
     )));
     let ui_app = Rc::clone(&app);
@@ -234,4 +246,67 @@ fn cancelled_file_and_folder_pickers_keep_controls_responsive() {
     click_button(&mut harness, "刷新状态");
     wait_until_idle(&mut harness, &app);
     assert!(app.borrow().status.is_some());
+}
+
+#[test]
+fn model_catalog_controls_load_clone_and_save_with_a_backup() {
+    let temp = match tempfile::tempdir() {
+        Ok(temp) => temp,
+        Err(error) => panic!("could not create synthetic model directory: {error}"),
+    };
+    let home = temp.path().join("codex-home");
+    if let Err(error) = crate::demo::create(&home) {
+        panic!("could not create synthetic UI configuration: {error}");
+    }
+    let initial = r#"{"catalog_marker":"preserved","models":[{"slug":"synthetic-model","display_name":"Synthetic Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Synthetic high"},{"effort":"low","description":"Synthetic low"}],"priority":4,"context_window":65536}]}"#;
+    if let Err(error) = fs::write(home.join("models-codex.json"), initial) {
+        panic!("could not create synthetic model catalog: {error}");
+    }
+    let (mut harness, app) = harness_for(
+        home.clone(),
+        FileDialogs {
+            pick_file: Arc::new(|_| None),
+            pick_folder: Arc::new(|| None),
+        },
+    );
+    wait_until_idle(&mut harness, &app);
+
+    app.borrow_mut().load_model_catalog();
+    wait_until_idle(&mut harness, &app);
+    assert!(app.borrow().model_catalog.is_some());
+    app.borrow_mut().add_model_from_selected();
+    {
+        let mut current = app.borrow_mut();
+        let Some(catalog) = current.model_catalog.as_mut() else {
+            panic!("model catalog was not loaded");
+        };
+        let Some(model) = catalog.models.get_mut(1) else {
+            panic!("cloned model was not added");
+        };
+        model.slug = "synthetic-model-2".into();
+        model.display_name = "Synthetic Model Two".into();
+    }
+    app.borrow_mut().save_model_catalog();
+    wait_until_idle(&mut harness, &app);
+
+    let current: serde_json::Value = match fs::read(home.join("models-codex.json"))
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(anyhow::Error::from))
+    {
+        Ok(value) => value,
+        Err(error) => panic!("saved synthetic catalog is invalid: {error}"),
+    };
+    assert_eq!(current["catalog_marker"], "preserved");
+    assert_eq!(current["models"].as_array().map(Vec::len), Some(2));
+    assert_eq!(current["models"][1]["slug"], "synthetic-model-2");
+    assert_eq!(current["models"][1]["context_window"], 65536);
+    assert!(fs::read_dir(&home).is_ok_and(|entries| {
+        entries.filter_map(std::result::Result::ok).any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("models-codex.json.bak-")
+        })
+    }));
+    assert!(!app.borrow().catalog_dirty);
 }

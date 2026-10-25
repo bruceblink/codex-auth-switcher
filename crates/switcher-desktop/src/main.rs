@@ -1,8 +1,10 @@
-//! A standalone egui desktop shell and a redacted local CLI. No remote requests.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+//! A standalone egui desktop application. No remote requests.
 mod app;
-mod cli;
+#[cfg(test)]
 mod demo;
 
 fn main() -> anyhow::Result<()> {
-    cli::run()
+    let paths = switcher_core::Paths::resolve(None)?;
+    app::run(switcher_core::Store::new(paths))
 }

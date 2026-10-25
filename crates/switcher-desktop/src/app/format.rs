@@ -86,6 +86,35 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
         "API key is empty, too long or contains whitespace." => {
             "API key 为空、过长或包含空白字符。请检查输入。"
         }
+        "Codex models-codex.json was not found." => {
+            "当前配置目录中没有 models-codex.json。请检查 Codex 目录。"
+        }
+        "Codex model catalog JSON is invalid." => "models-codex.json 格式无效，未修改文件。",
+        "Codex model catalog must contain between 1 and 512 models." => {
+            "模型目录必须包含 1 到 512 个模型。"
+        }
+        "Model IDs must be valid and unique." => "模型 ID 格式无效或重复。",
+        "Model display names must be non-empty and at most 120 characters." => {
+            "模型显示名称不能为空，且最多为 120 个字符。"
+        }
+        "Model visibility must be a short non-empty value." => {
+            "模型可见性不能为空，且最多为 32 个字符。"
+        }
+        "Each model must have between 1 and 32 reasoning levels." => {
+            "每个模型必须配置 1 到 32 个推理级别。"
+        }
+        "Model reasoning levels must be valid and unique." => "推理级别格式无效或重复。",
+        "The default reasoning level must be supported by its model." => {
+            "默认推理级别必须包含在该模型的支持列表中。"
+        }
+        "The model catalog belongs to another Codex directory." => {
+            "此模型目录属于其他 Codex 配置目录。请重新读取。"
+        }
+        "The model catalog changed after it was loaded. Reload before saving." => {
+            "读取后模型目录已被其他程序修改。请重新读取后再保存。"
+        }
+        "Cannot serialize the Codex model catalog." => "无法生成模型目录文件。",
+        "Cannot reserve a unique model catalog backup." => "无法创建不覆盖的模型目录备份。",
         "Target authentication is missing. Import a matching auth file." => {
             "目标模式缺少认证。请导入对应模式的认证 JSON。"
         }

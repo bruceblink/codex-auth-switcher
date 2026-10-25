@@ -9,7 +9,8 @@ mod permissions;
 mod store;
 
 pub use store::{
-    ImportSources, ModeStatus, PreparedSwitch, Preview, Status, Store, SwitchOptions, SwitchResult,
+    CodexModel, ImportSources, ModeStatus, ModelCatalog, ModelCatalogSaveResult, PreparedSwitch,
+    Preview, ReasoningLevel, Status, Store, SwitchOptions, SwitchResult,
 };
 
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,9 @@ impl Paths {
     }
     pub fn auth(&self) -> PathBuf {
         self.home.join("auth.json")
+    }
+    pub fn models_catalog(&self) -> PathBuf {
+        self.home.join("models-codex.json")
     }
     pub fn state(&self) -> PathBuf {
         self.home.join("auth-switcher-v2")

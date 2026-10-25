@@ -1,12 +1,12 @@
 # Codex Auth Switcher
 
-Windows 桌面 Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust 版本。程序包含图形界面和命令行界面，不需要安装 Python、Rust 或 Ramag。
+Windows 桌面 Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust 图形界面版本。
 
-工具同时恢复 `config.toml` 的模式参数和 `auth.json` 的认证。工具不依赖、不修改 `autocode.config.toml`。MCP、项目、插件、代理和其他共享设置保留当前值。
+工具恢复 `config.toml` 的模式参数和 `auth.json` 的认证。工具不依赖、不修改 `autocode.config.toml`。MCP、项目、插件、代理和其他共享设置保留当前值。
 
 ## 下载与启动
 
-从 GitHub Actions 的 `Cross-platform checks` 工作流下载 `codex-auth-switcher-windows-x64` 便携包。解压后运行 `codex-auth-switcher.exe`。发布版本、SHA-256 与使用步骤见 [V2 用户指南](docs/06-v2-user-guide.md)。
+从 GitHub Actions 的 `Cross-platform checks` 工作流下载 `codex-auth-switcher-windows-x64` 便携包。解压后运行 `codex-auth-switcher.exe`。Release 图形界面启动时不会打开终端窗口。使用步骤见 [V2 用户指南](docs/06-v2-user-guide.md)。
 
 ## 本机构建
 
@@ -14,17 +14,12 @@ Windows 桌面 Codex 的订阅与 API key 模式切换工具。本仓库只维�
 
 ```powershell
 cargo run --locked
-cargo run --locked -- --command status
-cargo run --locked -- --command initialize
-cargo run --locked -- --command preview --target api
-cargo run --locked -- --command switch --target api --api-key-stdin
+cargo build --release --locked
 ```
-
-标准输入只用于提供 key。不要把 key 写入命令参数。可使用 `--demo --codex-home <新目录> --isolated` 创建合成测试环境；演示目录必须是新目录。
 
 ## 项目结构
 
-仓库只保留一个 Cargo workspace。`switcher-core` crate 管理配置、加密存档和恢复；`switcher-desktop` crate 提供一个 egui 桌面程序和 CLI。界面协调代码位于 `app.rs`，控件布局位于 `app/ui.rs`，状态与错误文字位于 `app/format.rs`。UI 测试位于 `app/tests.rs`。这两个 crate 属于同一个 workspace，不是两套桌面实现。
+仓库只保留一个 Cargo workspace。`switcher-core` crate 管理配置、加密存档和恢复；`switcher-desktop` crate 提供 egui 桌面程序。界面协调代码位于 `app.rs`，控件布局位于 `app/ui.rs`，状态与错误文字位于 `app/format.rs`。UI 测试位于 `app/tests.rs`。
 
 ## 配置与安全边界
 
@@ -32,9 +27,10 @@ cargo run --locked -- --command switch --target api --api-key-stdin
 - API 默认 provider：`OpenAI`，默认地址：`https://vip.auto-code.net/v1`。
 - `openai` 与 `OpenAI` 是不同的 ID。初始化会优先导入现有配置，不用默认值覆盖已有网关。
 - API 模式保留现有 provider 地址和能力字段，并通过 `requires_openai_auth = true` 从 `auth.json` 读取 key。
-- UI/CLI 显式输入优先于环境变量，再使用已保存模式和项目默认值。
-- API key 输入框遮盖密钥。应用后输入内容会清除。
+- API key 只从输入框或已保存认证读取。程序不会读取 `AUTOCODE_API_KEY` 或 provider 的 `env_key` 环境变量。输入框里的密钥成功应用后，程序会写入 Windows 当前用户的持久环境变量 `AUTOCODE_API_KEY`；切换失败时不会写入。预览会显示认证来源，不显示密钥。应用后输入内容会清除。
+- “Codex 模型目录”可以维护 `models-codex.json` 的模型 ID、显示名称、可见性、优先级、默认推理级别和支持的推理级别。新增条目会复制所选模型的其他能力字段。保存前会检查字段和重复 ID，并创建不覆盖的 `models-codex.json.bak-*` 备份；检测到文件被其他程序修改时会拒绝保存。
 - 本地模式存档位于 `.codex/auth-switcher-v2/`。`modes.enc` 与 `pending.enc` 使用 AES-256-GCM；`vault.key` 与密文分开保存。
+- 配置变化时生成的 `config.toml.bak-*` 只保存当前模式参数和选中 provider，不复制共享设置或凭据。活动配置中的共享设置保持不变。
 - Windows 状态目录只允许当前用户和 SYSTEM 访问。密钥缺失、密文认证失败或外部文件冲突时，程序停止并保留现有数据。
 - Codex 使用的 `auth.json` 继续采用 Codex 格式。程序不会向远程 API 发送请求，也不会验证认证是否有效。
 - 文件检查不能锁住 Codex 自身。切换前请关闭 Codex；切换后重启 Codex 并新建会话。
@@ -47,12 +43,11 @@ cargo run --locked -- --command switch --target api --api-key-stdin
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-.\scripts\test-v2-headless.ps1
 .\scripts\package-windows.ps1
 .\scripts\test-v2-native-ui.ps1
 ```
 
-GitHub Actions 在 Windows、Linux 和 macOS 运行格式检查、Clippy 和 workspace 测试。Windows runner 还会构建便携包，并运行 Headless 与原生窗口检查；Linux 和 macOS 暂不执行原生窗口验收或打包。自动测试使用临时目录和虚构认证数据。Headless 检查会驱动 GUI 按钮并验证隔离文件状态。Windows 原生窗口检查会启动便携程序，只操作自动生成的演示目录。
+GitHub Actions 在 Windows、Linux 和 macOS 运行格式检查、Clippy 和 workspace 测试。Windows runner 还会构建便携包并运行原生窗口验收。原生验收只使用临时目录和合成认证数据。
 
 ## 文档
 

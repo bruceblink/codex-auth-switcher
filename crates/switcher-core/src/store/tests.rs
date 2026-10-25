@@ -265,6 +265,95 @@ fn api_key_comes_from_input_or_saved_auth_but_other_environment_options_still_ap
     Ok(())
 }
 
+const MODEL_CATALOG: &str = r#"{
+  "catalog_version": 3,
+  "models": [
+    {
+      "slug": "synthetic-model",
+      "display_name": "Synthetic Model",
+      "visibility": "list",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "high", "description": "Synthetic high", "extension": true},
+        {"effort": "low", "description": "Synthetic low"}
+      ],
+      "priority": 12,
+      "context_window": 123456,
+      "capability_marker": {"preserve": true}
+    }
+  ]
+}"#;
+
+#[test]
+fn model_catalog_edits_are_backed_up_and_preserve_unknown_metadata() -> anyhow::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let paths = Paths {
+        home: temporary.path().into(),
+    };
+    let store = Store::isolated(paths.clone());
+    fs::write(paths.models_catalog(), MODEL_CATALOG)?;
+    let original = fs::read(paths.models_catalog())?;
+    let mut catalog = store.load_model_catalog()?;
+    catalog.models[0].display_name = "Edited Synthetic Model".into();
+    catalog.models[0].default_reasoning_level = "low".into();
+    catalog.models[0].visibility = "hidden".into();
+    catalog.models[0].supported_reasoning_levels[0].effort = "low".into();
+    catalog.models[0].supported_reasoning_levels[1].effort = "high".into();
+    catalog.models[0].supported_reasoning_levels.swap(0, 1);
+
+    let (saved, result) = store.save_model_catalog(catalog)?;
+    let backup = result
+        .backup
+        .ok_or_else(|| anyhow::anyhow!("backup was not created"))?;
+    assert_eq!(fs::read(&backup)?, original);
+    assert_eq!(saved.models[0].display_name, "Edited Synthetic Model");
+    assert_eq!(result.model_count, 1);
+
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(paths.models_catalog())?)?;
+    assert_eq!(written["catalog_version"], 3);
+    assert_eq!(written["models"][0]["context_window"], 123456);
+    assert_eq!(written["models"][0]["capability_marker"]["preserve"], true);
+    assert_eq!(
+        written["models"][0]["supported_reasoning_levels"][1]["extension"],
+        true
+    );
+    assert_eq!(written["models"][0]["default_reasoning_level"], "low");
+    Ok(())
+}
+
+#[test]
+fn model_catalog_save_rejects_stale_or_duplicate_model_data() -> anyhow::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let paths = Paths {
+        home: temporary.path().into(),
+    };
+    let store = Store::isolated(paths.clone());
+    fs::write(paths.models_catalog(), MODEL_CATALOG)?;
+    let mut stale = store.load_model_catalog()?;
+    stale.models[0].display_name = "Uncommitted edit".into();
+    fs::write(paths.models_catalog(), format!("{MODEL_CATALOG}\n"))?;
+    assert!(store.save_model_catalog(stale).is_err());
+    assert_eq!(
+        fs::read(paths.models_catalog())?,
+        format!("{MODEL_CATALOG}\n").as_bytes()
+    );
+    assert_eq!(
+        fs::read_dir(&paths.home)?
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("models-codex.json.bak-"))
+            .count(),
+        0
+    );
+
+    let mut duplicate = store.load_model_catalog()?;
+    duplicate.models.push(duplicate.models[0].clone());
+    assert!(store.save_model_catalog(duplicate).is_err());
+    Ok(())
+}
+
 #[test]
 fn subscription_start_works_without_profile_file() -> anyhow::Result<()> {
     let data = Data::new()?;
@@ -396,20 +485,38 @@ fn stale_preview_never_overwrites_external_changes() -> anyhow::Result<()> {
 }
 
 #[test]
-fn plaintext_secret_in_current_config_prevents_backups() -> anyhow::Result<()> {
+fn unrelated_secrets_are_preserved_but_not_backed_up() -> anyhow::Result<()> {
     let data = Data::new()?;
     fs::write(
         data.store.paths.config(),
-        format!("{API}\n[extra]\napi_key = \"synthetic-other-secret\"\n"),
+        format!(
+            "{API}\n[extra]\napi_key = \"synthetic-other-secret\"\n\
+             [shell_environment_policy.set]\nANTHROPIC_AUTH_TOKEN = \"synthetic-shell-token\"\n"
+        ),
     )?;
     data.initialize()?;
-    let before = data.active()?;
-    assert!(
-        data.store
-            .prepare(Mode::Subscription, SwitchOptions::default())
-            .is_err()
+    let result = data.switch(Mode::Subscription)?;
+    let active = data.active()?;
+    let active_document = config::parse(&active.config)?;
+    assert_eq!(
+        active_document["extra"]["api_key"].as_str(),
+        Some("synthetic-other-secret")
     );
-    assert!(before == data.active()?);
+    assert_eq!(
+        active_document["shell_environment_policy"]["set"]["ANTHROPIC_AUTH_TOKEN"].as_str(),
+        Some("synthetic-shell-token")
+    );
+    let backup_path = result
+        .backup
+        .ok_or_else(|| anyhow::anyhow!("profile backup path is missing"))?;
+    let backup = fs::read(backup_path)?;
+    let backup_text = String::from_utf8_lossy(&backup);
+    assert!(!backup_text.contains("synthetic-other-secret"));
+    assert!(!backup_text.contains("synthetic-shell-token"));
+    let backup_document = config::parse(&backup)?;
+    assert_eq!(backup_document["model"].as_str(), Some("test-api-model"));
+    assert!(backup_document.get("extra").is_none());
+    assert!(backup_document.get("shell_environment_policy").is_none());
     Ok(())
 }
 

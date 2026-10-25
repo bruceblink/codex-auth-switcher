@@ -11,9 +11,34 @@ $script:ExecutablePath = (Resolve-Path -LiteralPath $ExecutablePath).Path
 if ([System.IO.Path]::GetExtension($script:ExecutablePath) -ne ".exe") {
     throw "The native UI test requires a Windows executable, not a ZIP archive."
 }
+$executableBytes = [System.IO.File]::ReadAllBytes($script:ExecutablePath)
+$peOffset = [BitConverter]::ToInt32($executableBytes, 0x3c)
+if ([System.Text.Encoding]::ASCII.GetString($executableBytes, $peOffset, 4) -ne "PE`0`0") {
+    throw "The native UI test executable has an invalid PE header."
+}
+$optionalHeaderOffset = $peOffset + 24
+$optionalHeaderMagic = [BitConverter]::ToUInt16($executableBytes, $optionalHeaderOffset)
+if ($optionalHeaderMagic -ne 0x10b -and $optionalHeaderMagic -ne 0x20b) {
+    throw "The native UI test executable has an unsupported PE header."
+}
+$subsystem = [BitConverter]::ToUInt16($executableBytes, $optionalHeaderOffset + 68)
+if ($subsystem -ne 2) {
+    throw "The Release executable must use the Windows GUI subsystem."
+}
 $script:TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "codex-auth-switcher-native-ui-$([guid]::NewGuid().ToString('N'))"
 $script:CodexHome = Join-Path $script:TestRoot "codex-home"
 $script:OriginalPath = $env:PATH
+$script:EnvironmentNames = @(
+    "CODEX_HOME",
+    "AUTOCODE_API_KEY",
+    "AUTOCODE_BASE_URL",
+    "CODEX_API_PROVIDER",
+    "CODEX_MODEL_PROVIDER"
+)
+$script:OriginalEnvironment = @{}
+foreach ($name in $script:EnvironmentNames) {
+    $script:OriginalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
 $script:Process = $null
 
 function Get-MainWindow {
@@ -111,18 +136,34 @@ function Select-Target([string]$Name) {
     throw "The native GUI did not select target '$Name'."
 }
 
-function Read-Status {
-    $output = & $script:ExecutablePath --command status --codex-home $script:CodexHome --isolated 2>$null
-    if ($LASTEXITCODE -ne 0) {
+function Read-ActiveFiles {
+    $configPath = Join-Path $script:CodexHome "config.toml"
+    $authPath = Join-Path $script:CodexHome "auth.json"
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $authPath -PathType Leaf)) {
         return $null
     }
-    return ($output -join "`n") | ConvertFrom-Json
+
+    $config = Get-Content -LiteralPath $configPath -Raw
+    $auth = Get-Content -LiteralPath $authPath -Raw | ConvertFrom-Json
+    $mode = if ($auth.auth_mode -eq "chatgpt") {
+        "subscription"
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$auth.OPENAI_API_KEY)) {
+        "api"
+    }
+    else {
+        "unknown"
+    }
+    $modelMatch = [regex]::Match($config, '(?m)^model\s*=\s*"([^"]+)"')
+    $model = if ($modelMatch.Success) { $modelMatch.Groups[1].Value } else { "" }
+    return [pscustomobject]@{ mode = $mode; auth_mode = $mode; model = $model }
 }
 
 function Wait-ForMode([string]$Mode) {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $status = Read-Status
+        $status = Read-ActiveFiles
         if ($null -ne $status -and $status.mode -eq $Mode -and $status.auth_mode -eq $Mode) {
             return $status
         }
@@ -133,6 +174,46 @@ function Wait-ForMode([string]$Mode) {
 
 try {
     New-Item -ItemType Directory -Path $script:TestRoot | Out-Null
+    New-Item -ItemType Directory -Path $script:CodexHome | Out-Null
+
+    # Seed only synthetic active files and backups; start the release GUI without arguments.
+    $subscriptionConfig = @'
+model_provider = "openai"
+model = "demo-subscription-model"
+model_reasoning_effort = "medium"
+cli_auth_credentials_store = "file"
+
+[features]
+multi_agent = true
+
+[projects."F:/example"]
+trust_level = "trusted"
+'@
+    $apiConfig = @'
+model_provider = "SyntheticApi"
+model = "demo-api-model"
+model_reasoning_effort = "xhigh"
+
+[model_providers.SyntheticApi]
+name = "Synthetic gateway"
+base_url = "https://gateway.example.invalid/v1"
+wire_api = "responses"
+requires_openai_auth = true
+'@
+    $subscriptionAuth = @{
+        auth_mode = "chatgpt"
+        tokens = @{
+            access_token = "synthetic-access-token"
+            refresh_token = "synthetic-refresh-token"
+            id_token = "synthetic-id-token"
+            account_id = "synthetic-account"
+        }
+    } | ConvertTo-Json -Depth 4 -Compress
+    [System.IO.File]::WriteAllText((Join-Path $script:CodexHome "config.toml"), $subscriptionConfig, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $script:CodexHome "auth.json"), $subscriptionAuth, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $script:CodexHome "config.toml.bak-synthetic-api"), $apiConfig, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $script:CodexHome "auth.json.bak-synthetic-api"), '{"OPENAI_API_KEY":"synthetic-api-key"}', [System.Text.UTF8Encoding]::new($false))
+
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
     Add-Type -TypeDefinition @"
@@ -155,10 +236,13 @@ public static class NativeUiInput
 }
 "@
 
-    # Restrict the launched process to Windows system tools to verify the portable runtime boundary.
+    # Keep host credentials and API settings out of the isolated native-window test.
+    foreach ($name in $script:EnvironmentNames) {
+        [Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
+    $env:CODEX_HOME = $script:CodexHome
     $env:PATH = Join-Path $env:SystemRoot "System32"
-    $script:Process = Start-Process -FilePath $script:ExecutablePath `
-        -ArgumentList @("--demo", "--isolated", "--codex-home", $script:CodexHome) -PassThru
+    $script:Process = Start-Process -FilePath $script:ExecutablePath -PassThru
 
     $windowDeadline = [DateTime]::UtcNow.AddSeconds(30)
     while ([DateTime]::UtcNow -lt $windowDeadline -and $null -eq (Get-MainWindow)) {
@@ -174,7 +258,7 @@ public static class NativeUiInput
     Click-NativeButton "初始化模式"
     $null = Wait-ForButton "补齐模式"
 
-    # The demo starts in subscription mode, so apply the stored API profile through the real controls.
+    # The synthetic active profile starts in subscription mode, so switch through the real controls.
     Select-Target "API key"
     Click-NativeButton "预览变更"
     $null = Wait-ForButton "应用切换"
@@ -190,7 +274,7 @@ public static class NativeUiInput
     Click-NativeButton "应用切换"
     $subscriptionStatus = Wait-ForMode "subscription"
     if ($subscriptionStatus.model -ne "demo-subscription-model") {
-        throw "The native GUI did not restore the demo subscription model."
+        throw "The native GUI did not restore the synthetic subscription model."
     }
 
     $config = Get-Content -LiteralPath (Join-Path $script:CodexHome "config.toml") -Raw
@@ -206,6 +290,9 @@ public static class NativeUiInput
 }
 finally {
     $env:PATH = $script:OriginalPath
+    foreach ($name in $script:EnvironmentNames) {
+        [Environment]::SetEnvironmentVariable($name, $script:OriginalEnvironment[$name], "Process")
+    }
     if ($null -ne $script:Process -and -not $script:Process.HasExited) {
         Stop-Process -Id $script:Process.Id -Force
     }

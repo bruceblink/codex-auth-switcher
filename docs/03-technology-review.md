@@ -2,7 +2,7 @@
 
 最后更新：2026-10-25。
 
-当前程序使用 Rust + egui/eframe。CLI、TOML 与 JSON 处理、AES-256-GCM 存档和事务恢复逻辑都位于 Rust workspace。Python 第一版实现和 CI 已从当前分支删除。
+当前程序使用 Rust + egui/eframe。TOML 与 JSON 处理、AES-256-GCM 存档和事务恢复逻辑都位于 Rust workspace。程序只提供桌面图形界面。Python 第一版实现和 CLI 已从当前分支删除。
 
 切换框架的依据和实测范围见[egui 与 gpui-kit 维护成本评估](07-egui-maintenance-evaluation.md)。本机同条件比较显示 egui EXE 和便携 ZIP 更小，依赖图和 UI 测试代码也较少。因此，本项目后续只维护 egui 桌面实现。
 

@@ -5,7 +5,9 @@ use crate::{
     crypto::Cipher,
     files::{self, Lock},
 };
+mod catalog;
 use base64::{Engine, engine::general_purpose::STANDARD};
+pub use catalog::{CodexModel, ModelCatalog, ModelCatalogSaveResult, ReasoningLevel};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -158,6 +160,14 @@ impl Store {
         Self {
             inherit_environment: false,
             ..Self::new(paths)
+        }
+    }
+
+    /// Rebind the store to another Codex directory without changing its environment policy.
+    pub fn with_paths(&self, paths: Paths) -> Self {
+        Self {
+            paths,
+            ..self.clone()
         }
     }
 
@@ -564,10 +574,8 @@ impl Store {
         } else {
             config::apply(&before.config, &destination.config)?
         };
-        if after_config != before.config && config::has_credentials(current.as_item()) {
-            return Err(Error(
-                "Current config contains credentials. Move them out before creating a config backup.",
-            ));
+        if after_config != before.config {
+            profile_backup(&before.config)?;
         }
         let after = Active {
             config: after_config,
@@ -650,7 +658,8 @@ impl Store {
         let cipher = Cipher::open(&self.paths, false)?;
         self.state(&cipher)?;
         let backup = if prepared.before.config != prepared.after.config {
-            Some(self.backup(&prepared.before.config)?)
+            let fragment = profile_backup(&prepared.before.config)?;
+            Some(self.backup(fragment.as_bytes())?)
         } else {
             None
         };
@@ -803,11 +812,25 @@ fn decode_auth(value: Option<&str>) -> Result<Option<Vec<u8>>> {
         })
         .transpose()
 }
+
 fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "selected file".into())
 }
+
+/// Produce a plaintext backup from mode-owned settings only, excluding unrelated config secrets.
+fn profile_backup(config_bytes: &[u8]) -> Result<String> {
+    let document = config::parse(config_bytes)?;
+    let fragment = config::fragment(&document)?;
+    if config::has_credentials(config::parse(fragment.as_bytes())?.as_item()) {
+        return Err(Error(
+            "The active provider contains credentials in TOML and cannot be backed up safely.",
+        ));
+    }
+    Ok(fragment)
+}
+
 fn base_url(doc: &DocumentMut) -> Result<String> {
     let url = config::table(doc)?
         .and_then(|t| t.get("base_url"))

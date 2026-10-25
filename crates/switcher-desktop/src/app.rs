@@ -17,7 +17,8 @@ use std::{
     time::Duration,
 };
 use switcher_core::{
-    ImportSources, Mode, Paths, PreparedSwitch, Status, Store, SwitchOptions, SwitchResult,
+    CodexModel, ImportSources, Mode, ModelCatalog, ModelCatalogSaveResult, Paths, PreparedSwitch,
+    ReasoningLevel, Status, Store, SwitchOptions, SwitchResult,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -57,6 +58,8 @@ enum WorkerOutput {
     Status(CoreResult<Status>),
     Prepared(CoreResult<PreparedSwitch>),
     Applied(CoreResult<(SwitchResult, CoreResult<Status>)>),
+    CatalogLoaded(CoreResult<ModelCatalog>),
+    CatalogSaved(CoreResult<(ModelCatalog, ModelCatalogSaveResult)>),
     PickFile {
         auth: bool,
         target: Mode,
@@ -68,11 +71,15 @@ enum WorkerOutput {
 /// Keeps file and crypto work on a worker thread while the egui event loop stays responsive.
 struct SwitcherApp {
     store: Store,
-    demo: bool,
     dialogs: FileDialogs,
     target: Mode,
     status: Option<Status>,
     prepared: Option<PreparedSwitch>,
+    model_catalog: Option<ModelCatalog>,
+    selected_model: usize,
+    reasoning_levels_text: String,
+    catalog_dirty: bool,
+    catalog_window_open: bool,
     directory: String,
     subscription_provider: String,
     api_provider: String,
@@ -86,19 +93,23 @@ struct SwitcherApp {
 }
 
 impl SwitcherApp {
-    fn new(store: Store, demo: bool) -> Self {
-        Self::with_dialogs(store, demo, FileDialogs::system())
+    fn new(store: Store) -> Self {
+        Self::with_dialogs(store, FileDialogs::system())
     }
 
-    fn with_dialogs(store: Store, demo: bool, dialogs: FileDialogs) -> Self {
+    fn with_dialogs(store: Store, dialogs: FileDialogs) -> Self {
         let mut app = Self {
             directory: store.paths.home.to_string_lossy().into_owned(),
             store,
-            demo,
             dialogs,
             target: Mode::Api,
             status: None,
             prepared: None,
+            model_catalog: None,
+            selected_model: 0,
+            reasoning_levels_text: String::new(),
+            catalog_dirty: false,
+            catalog_window_open: false,
             subscription_provider: "openai".into(),
             api_provider: "OpenAI".into(),
             endpoint: "https://gateway.example.com/v1".into(),
@@ -231,6 +242,41 @@ impl SwitcherApp {
                     self.show_error(&error);
                 }
             },
+            WorkerOutput::CatalogLoaded(result) => match result {
+                Ok(catalog) => {
+                    self.selected_model = 0;
+                    self.reasoning_levels_text = catalog
+                        .models
+                        .first()
+                        .map(reasoning_levels_text)
+                        .unwrap_or_default();
+                    self.model_catalog = Some(catalog);
+                    self.catalog_dirty = false;
+                    self.message = "已读取 Codex 模型目录".into();
+                    self.error = false;
+                }
+                Err(error) => self.show_error(&error),
+            },
+            WorkerOutput::CatalogSaved(result) => match result {
+                Ok((catalog, saved)) => {
+                    self.selected_model = self.selected_model.min(catalog.models.len() - 1);
+                    self.reasoning_levels_text = catalog
+                        .models
+                        .get(self.selected_model)
+                        .map(reasoning_levels_text)
+                        .unwrap_or_default();
+                    self.model_catalog = Some(catalog);
+                    self.catalog_dirty = false;
+                    self.message = match saved.backup {
+                        Some(backup) => {
+                            format!("已保存 {} 个模型选项。备份：{}", saved.model_count, backup)
+                        }
+                        None => "模型目录没有变化".into(),
+                    };
+                    self.error = false;
+                }
+                Err(error) => self.show_error(&error),
+            },
             WorkerOutput::PickFile { auth, target, path } => {
                 if let Some(path) = path {
                     let mut sources = ImportSources::default();
@@ -271,11 +317,18 @@ impl SwitcherApp {
         }
         match Paths::resolve(Some(PathBuf::from(self.directory.trim()))) {
             Ok(paths) => {
-                self.store = if self.demo {
-                    Store::isolated(paths)
-                } else {
-                    Store::new(paths)
-                };
+                if paths.home != self.store.paths.home {
+                    if self.catalog_dirty {
+                        self.message =
+                            "请先保存或放弃当前模型目录改动，再选择其他配置目录。".into();
+                        self.error = true;
+                        return false;
+                    }
+                    self.model_catalog = None;
+                    self.reasoning_levels_text.clear();
+                    self.selected_model = 0;
+                }
+                self.store = self.store.with_paths(paths);
                 true
             }
             Err(error) => {
@@ -346,6 +399,64 @@ impl SwitcherApp {
         self.start_work(move |store| WorkerOutput::Prepared(store.prepare(target, options)));
     }
 
+    fn load_model_catalog(&mut self) {
+        if self.catalog_dirty {
+            self.message = "有未保存的模型目录改动。请先保存，再重新读取。".into();
+            self.error = true;
+            return;
+        }
+        if !self.select_directory() {
+            return;
+        }
+        self.start_work(|store| WorkerOutput::CatalogLoaded(store.load_model_catalog()));
+    }
+
+    fn save_model_catalog(&mut self) {
+        let Some(catalog) = self.model_catalog.clone() else {
+            return;
+        };
+        self.start_work(move |store| WorkerOutput::CatalogSaved(store.save_model_catalog(catalog)));
+    }
+
+    fn add_model_from_selected(&mut self) {
+        let Some(catalog) = self.model_catalog.as_mut() else {
+            return;
+        };
+        let Some(template) = catalog
+            .models
+            .get(self.selected_model)
+            .or_else(|| catalog.models.first())
+            .cloned()
+        else {
+            return;
+        };
+        let mut model: CodexModel = template;
+        let base = "new-model";
+        let mut suffix = 1usize;
+        while catalog
+            .models
+            .iter()
+            .any(|item| item.slug == format!("{base}-{suffix}"))
+        {
+            suffix += 1;
+        }
+        model.slug = format!("{base}-{suffix}");
+        model.display_name = "新模型".into();
+        model.priority = catalog
+            .models
+            .iter()
+            .map(|item| item.priority)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.reasoning_levels_text = reasoning_levels_text(&model);
+        catalog.models.push(model);
+        self.selected_model = catalog.models.len() - 1;
+        self.catalog_dirty = true;
+        self.message = "已添加模型条目。请修改模型 ID 和名称，并确认复制来的能力参数。".into();
+        self.error = false;
+    }
+
     fn apply(&mut self) {
         let Some(prepared) = self.prepared.take() else {
             return;
@@ -398,6 +509,11 @@ impl SwitcherApp {
         if self.busy {
             return;
         }
+        if self.catalog_dirty {
+            self.message = "请先保存模型目录改动，再选择其他配置目录。".into();
+            self.error = true;
+            return;
+        }
         self.prepared = None;
         self.busy = true;
         self.error = false;
@@ -419,6 +535,15 @@ impl SwitcherApp {
     }
 }
 
+fn reasoning_levels_text(model: &CodexModel) -> String {
+    model
+        .supported_reasoning_levels
+        .iter()
+        .map(|level| level.effort.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl eframe::App for SwitcherApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_worker();
@@ -432,7 +557,7 @@ impl eframe::App for SwitcherApp {
     }
 }
 
-pub fn run(store: Store, demo: bool) -> anyhow::Result<()> {
+pub fn run(store: Store) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Codex Auth Switcher v2")
@@ -446,7 +571,7 @@ pub fn run(store: Store, demo: bool) -> anyhow::Result<()> {
         options,
         Box::new(move |creation| {
             creation.egui_ctx.set_visuals(egui::Visuals::light());
-            Ok(Box::new(SwitcherApp::new(store, demo)))
+            Ok(Box::new(SwitcherApp::new(store)))
         }),
     )
     .map_err(|error| anyhow::anyhow!("Cannot open the egui window: {error}"))
