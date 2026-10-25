@@ -179,6 +179,12 @@ impl SwitcherApp {
                     } else {
                         "目标与当前配置一致".into()
                     };
+                    if prepared.preview.auth_changes {
+                        self.message.push_str(&format!(
+                            "。认证来源：{}",
+                            format::auth_source_name(&prepared.preview.auth_source)
+                        ));
+                    }
                     self.prepared = Some(prepared);
                 }
                 Err(error) => self.show_error(&error),
@@ -194,6 +200,19 @@ impl SwitcherApp {
                     } else {
                         "配置未变化".into()
                     };
+                    match applied.environment_persisted {
+                        Some(true) => {
+                            self.message
+                                .push_str(" API key 已保存到当前用户环境变量 AUTOCODE_API_KEY。");
+                        }
+                        Some(false) => {
+                            self.message.push_str(
+                                " 切换已完成，但无法保存当前用户环境变量 AUTOCODE_API_KEY。",
+                            );
+                            self.error = true;
+                        }
+                        None => {}
+                    }
                     match status {
                         Ok(status) => {
                             self.sync_profiles(&status);

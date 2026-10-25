@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod crypto;
+mod environment;
 mod files;
 #[cfg(windows)]
 mod permissions;

@@ -140,14 +140,27 @@ fn controls_initialize_import_preview_and_switch_both_modes() {
     }));
 
     click_button(&mut harness, "API key");
+    app.borrow_mut().key = Zeroizing::new("synthetic-input-ui-key".into());
     click_button(&mut harness, "预览变更");
     wait_until_idle(&mut harness, &app);
     assert!(app.borrow().prepared.is_some());
+    assert_eq!(
+        app.borrow()
+            .prepared
+            .as_ref()
+            .map(|prepared| prepared.preview.auth_source.as_str()),
+        Some("user input")
+    );
     assert_eq!(
         app.borrow().status.as_ref().and_then(|status| status.mode),
         Some(Mode::Subscription)
     );
     click_button(&mut harness, "应用切换");
+    assert!(
+        app.borrow().busy,
+        "apply button did not start work: {}",
+        app.borrow().message
+    );
     wait_until_idle(&mut harness, &app);
     assert_eq!(
         app.borrow().status.as_ref().and_then(|status| status.mode),
@@ -155,6 +168,7 @@ fn controls_initialize_import_preview_and_switch_both_modes() {
         "{}",
         app.borrow().message
     );
+    assert!(app.borrow().message.contains("AUTOCODE_API_KEY"));
     let active_config = fs::read_to_string(home.join("config.toml"));
     assert!(active_config.is_ok_and(|text| {
         text.contains("model = \"imported-ui-model\"")
@@ -162,7 +176,7 @@ fn controls_initialize_import_preview_and_switch_both_modes() {
             && text.contains("[projects.\"F:/example\"]")
     }));
     let active_auth = fs::read_to_string(home.join("auth.json"));
-    assert!(active_auth.is_ok_and(|text| text.contains("synthetic-ui-key")));
+    assert!(active_auth.is_ok_and(|text| text.contains("synthetic-input-ui-key")));
     assert!(app.borrow().key.is_empty());
 
     click_button(&mut harness, "订阅");

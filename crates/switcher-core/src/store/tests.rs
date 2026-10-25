@@ -215,13 +215,14 @@ fn missing_target_auth_and_wrong_import_leave_active_unchanged() -> anyhow::Resu
 }
 
 #[test]
-fn user_input_overrides_environment_and_environment_overrides_saved_values() -> anyhow::Result<()> {
+fn api_key_comes_from_input_or_saved_auth_but_other_environment_options_still_apply()
+-> anyhow::Result<()> {
     let mut data = Data::new()?;
-    data.initialize()?;
-    data.switch(Mode::Subscription)?;
     data.store
         .environment
         .insert("AUTOCODE_API_KEY".into(), "synthetic-env-key".into());
+    data.initialize()?;
+    data.switch(Mode::Subscription)?;
     data.store
         .environment
         .insert("CODEX_API_PROVIDER".into(), "env.api".into());
@@ -229,21 +230,36 @@ fn user_input_overrides_environment_and_environment_overrides_saved_values() -> 
         "AUTOCODE_BASE_URL".into(),
         "https://env.example.invalid/v1".into(),
     );
+    let prepared = data.store.prepare(Mode::Api, SwitchOptions::default())?;
+    assert_eq!(prepared.preview.auth_source, "latest active authentication");
+    let result = data.store.apply(prepared)?;
+    assert_eq!(result.environment_persisted, None);
+    assert!(fs::read_to_string(data.store.paths.auth())?.contains(KEY));
+    data.switch(Mode::Subscription)?;
+
     let options = SwitchOptions {
         provider: Some("ui.api".into()),
         base_url: Some("https://ui.example.invalid/v1".into()),
         api_key: Some(Zeroizing::new("synthetic-ui-key".into())),
     };
-    data.store.apply(data.store.prepare(Mode::Api, options)?)?;
+    let prepared = data.store.prepare(Mode::Api, options)?;
+    assert_eq!(prepared.preview.auth_source, "user input");
+    let result = data.store.apply(prepared)?;
+    assert_eq!(result.environment_persisted, Some(true));
     let status = data.store.status()?;
     assert_eq!(status.provider, "ui.api");
     assert_eq!(status.base_url, "https://ui.example.invalid/v1");
     assert!(fs::read_to_string(data.store.paths.auth())?.contains("synthetic-ui-key"));
-    data.switch(Mode::Api)?;
+    data.switch(Mode::Subscription)?;
+    let prepared = data.store.prepare(Mode::Api, SwitchOptions::default())?;
+    assert_eq!(prepared.preview.auth_source, "latest active authentication");
+    let result = data.store.apply(prepared)?;
+    assert_eq!(result.environment_persisted, None);
     let status = data.store.status()?;
     assert_eq!(status.provider, "env.api");
     assert_eq!(status.base_url, "https://env.example.invalid/v1");
-    assert!(fs::read_to_string(data.store.paths.auth())?.contains("synthetic-env-key"));
+    assert!(fs::read_to_string(data.store.paths.auth())?.contains("synthetic-ui-key"));
+    assert!(!fs::read_to_string(data.store.paths.auth())?.contains("synthetic-env-key"));
     assert!(!fs::read_to_string(data.store.paths.config())?.contains("synthetic-"));
     assert!(!data.store.paths.home.join(".env").exists());
     Ok(())

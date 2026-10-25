@@ -12,6 +12,15 @@ pub(super) fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+pub(super) fn auth_source_name(source: &str) -> &str {
+    match source {
+        "user input" => "界面输入",
+        "environment" => "旧存档环境来源",
+        "latest active authentication" => "当前活动认证",
+        source => source,
+    }
+}
+
 pub(super) fn masked_hint(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
     if chars.is_empty() {

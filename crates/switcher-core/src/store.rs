@@ -91,6 +91,7 @@ pub struct Preview {
     pub target: Mode,
     pub changes: Vec<Change>,
     pub auth_changes: bool,
+    pub auth_source: String,
     pub changed: bool,
     pub warning: String,
 }
@@ -117,6 +118,7 @@ pub struct PreparedSwitch {
     after: Active,
     vault_before: Vec<u8>,
     state: State,
+    persist_api_key: Option<Zeroizing<String>>,
     pub preview: Preview,
 }
 
@@ -126,6 +128,7 @@ pub struct SwitchResult {
     pub changed: bool,
     pub backup: Option<String>,
     pub restart_required: bool,
+    pub environment_persisted: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -418,13 +421,6 @@ impl Store {
                     }
                 }
             }
-            if mode == Mode::Api
-                && profile.auth.is_none()
-                && let Some(key) = self.environment("AUTOCODE_API_KEY")?
-            {
-                profile.auth = Some(STANDARD.encode(config::api_auth(&key)?));
-                profile.auth_source = "environment".into();
-            }
         }
         if self.active()? != active {
             return Err(Error("Codex files changed during initialization. Retry."));
@@ -493,7 +489,10 @@ impl Store {
         let destination = state.profiles.get_mut(&target).ok_or(Error(
             "Target mode configuration is missing. Initialize or import its config.",
         ))?;
+        let mut auth_source = destination.auth_source.clone();
         let mut fragment = config::parse(destination.config.as_bytes())?;
+        let api_key_was_supplied = options.api_key.is_some();
+        let mut persist_api_key = None;
         let provider_env = self.environment(if target == Mode::Api {
             "CODEX_API_PROVIDER"
         } else {
@@ -518,18 +517,10 @@ impl Store {
             }
         }
         if target == Mode::Api {
-            let env_name = config::table(&fragment)?
-                .and_then(|t| t.get("env_key"))
-                .and_then(Item::as_str)
-                .unwrap_or("AUTOCODE_API_KEY")
-                .to_string();
-            let key = match options.api_key {
-                Some(key) if !key.is_empty() => Some(key),
-                _ => self.environment(&env_name)?,
-            };
-            if let Some(key) = key {
+            if let Some(key) = options.api_key.filter(|key| !key.is_empty()) {
                 destination.auth = Some(STANDARD.encode(config::api_auth(&key)?));
-                destination.auth_source = "input or environment".into();
+                auth_source = "user input".into();
+                persist_api_key = Some(key);
             }
             let name = config::provider(&fragment)?.to_string();
             let table = fragment
@@ -555,7 +546,7 @@ impl Store {
                 config::endpoint(url)?;
                 table.insert("base_url", value(url));
             }
-        } else if options.base_url.is_some() || options.api_key.is_some() {
+        } else if options.base_url.is_some() || api_key_was_supplied {
             return Err(Error("API input requires API mode."));
         }
         destination.config = fragment.to_string();
@@ -628,13 +619,14 @@ impl Store {
                 });
             }
         }
-        let preview = Preview { target, changed: before != after, auth_changes: before.auth != after.auth, changes, warning: "Close Codex before applying. Restart Codex and use a new chat after switching; old chats may retain their provider.".into() };
+        let preview = Preview { target, changed: before != after, auth_changes: before.auth != after.auth, auth_source, changes, warning: "Close Codex before applying. Restart Codex and use a new chat after switching; old chats may retain their provider.".into() };
         Ok(PreparedSwitch {
             home: self.paths.home.clone(),
             before,
             after,
             vault_before,
             state,
+            persist_api_key,
             preview,
         })
     }
@@ -711,11 +703,16 @@ impl Store {
                 )),
             };
         }
+        let environment_persisted = prepared
+            .persist_api_key
+            .as_deref()
+            .map(|key| crate::environment::persist_api_key(key));
         Ok(SwitchResult {
             target: prepared.preview.target,
             changed: prepared.preview.changed,
             backup: backup.map(|p| p.to_string_lossy().into()),
             restart_required: prepared.preview.changed,
+            environment_persisted,
         })
     }
 
