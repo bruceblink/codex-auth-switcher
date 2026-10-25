@@ -170,11 +170,7 @@ fn controls_initialize_import_preview_and_switch_both_modes() {
         Some(Mode::Subscription)
     );
     click_button(&mut harness, "应用切换");
-    assert!(
-        app.borrow().busy,
-        "apply button did not start work: {}",
-        app.borrow().message
-    );
+    // A fast worker can finish during the final harness frame after the click.
     wait_until_idle(&mut harness, &app);
     assert_eq!(
         app.borrow().status.as_ref().and_then(|status| status.mode),
