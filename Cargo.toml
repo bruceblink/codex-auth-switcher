@@ -10,7 +10,7 @@ rust-version = "1.95"
 repository = "https://github.com/bruceblink/codex-auth-switcher"
 
 [workspace.dependencies]
-eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "system_fonts", "wayland", "x11"] }
+eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "links", "system_fonts", "wayland", "wgpu", "x11"] }
 aes-gcm = "0.10"
 anyhow = "1"
 base64 = "0.22"

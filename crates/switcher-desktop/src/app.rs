@@ -563,7 +563,7 @@ pub fn run(store: Store) -> anyhow::Result<()> {
             .with_title("Codex Auth Switcher v2")
             .with_inner_size([920.0, 720.0])
             .with_min_inner_size([720.0, 600.0]),
-        renderer: eframe::Renderer::Glow,
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     eframe::run_native(
