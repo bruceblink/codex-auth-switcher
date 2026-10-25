@@ -30,6 +30,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 cargo build --release --locked
 .\scripts\test-v2-headless.ps1
+.\scripts\test-v2-native-ui.ps1
 .\scripts\package-windows.ps1
 ```
 

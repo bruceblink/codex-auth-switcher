@@ -25,6 +25,8 @@ jobs:
         run: .\scripts\package-windows.ps1
       - name: Test packaged CLI without host credentials
         run: .\scripts\test-v2-headless.ps1
+      - name: Test packaged native Windows UI
+        run: .\scripts\test-v2-native-ui.ps1 -ExecutablePath .\target\release\codex-auth-switcher.exe
       - name: Upload portable package
         uses: actions/upload-artifact@v4
         with:

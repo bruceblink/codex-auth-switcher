@@ -114,6 +114,8 @@ cargo test --workspace --locked
 .\scripts\test-v2-headless.ps1
 ```
 
+Windows CI 还会启动便携版真实窗口，通过 Windows UI Automation 选择目标模式、预览并应用 API/订阅往返。该检查只使用自动生成的隔离演示目录。
+
 版本二的开发范围、验收条件与回滚边界见 [第二版开发计划](docs/05-v2-gpui-kit-development-plan.md)。egui/eframe、gpui-kit、Electron 等方案的评估见 [技术重评](docs/03-technology-review.md)。
 
 Release 构建完成后，可用 `scripts/package-windows.ps1` 生成 Windows 便携 ZIP 和 SHA-256 文件。压缩包包含独立可执行文件和 [V2 用户指南](docs/06-v2-user-guide.md)，运行时不要求 Python、Rust 或 Ramag。
