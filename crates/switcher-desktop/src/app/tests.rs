@@ -54,6 +54,8 @@ fn harness_for(
     let ui_app = Rc::clone(&app);
     let harness = Harness::builder()
         .with_size([720.0, 600.0])
+        // Layout and repaint settling can exceed egui_kittest's default four steps.
+        .with_max_steps(16)
         .allow_missing_glyphs()
         .build_ui(move |ui| ui_app.borrow_mut().run_ui(ui));
     (harness, app)
