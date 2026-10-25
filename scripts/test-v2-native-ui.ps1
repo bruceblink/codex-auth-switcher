@@ -145,6 +145,19 @@ function Click-NativeButton([string]$Name) {
     $null = [NativeUiInput]::SetForegroundWindow($windowHandle)
     Start-Sleep -Milliseconds 100
     $button = Wait-ForButton $Name
+    $invokePattern = $null
+    try {
+        $invokePattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    }
+    catch {
+        # Toggle controls may expose TogglePattern only; use native mouse input for those controls.
+    }
+    if ($null -ne $invokePattern) {
+        $invokePattern.Invoke()
+        Start-Sleep -Milliseconds 100
+        return
+    }
+
     try {
         $point = $button.GetClickablePoint()
         $x = [int][Math]::Round($point.X)
