@@ -1,5 +1,7 @@
 param(
-    [string]$ExecutablePath = (Join-Path $PSScriptRoot "..\target\release\codex-auth-switcher.exe")
+    [string]$ExecutablePath = (Join-Path $PSScriptRoot "..\target\release\codex-auth-switcher.exe"),
+    [ValidateRange(0, 120)]
+    [int]$HoldWindowSeconds = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -85,11 +87,61 @@ function Wait-ForButton([string]$Name, [bool]$RequireEnabled = $true) {
     throw "The native GUI button '$Name' did not become available."
 }
 
+function Wait-ForButtonDisabled([string]$Name) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $button = Find-Button $Name
+        if ($null -ne $button -and -not $button.Current.IsEnabled) {
+            return $button
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw "The native GUI button '$Name' did not become disabled after saving."
+}
+
+function Find-TextInput([string]$Name) {
+    $window = Get-MainWindow
+    if ($null -eq $window) {
+        return $null
+    }
+
+    $editCondition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit
+    )
+    $inputs = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
+    foreach ($input in $inputs) {
+        if ($input.Current.Name -eq $Name) {
+            return $input
+        }
+    }
+    return $null
+}
+
+function Wait-ForTextInput([string]$Name) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $input = Find-TextInput $Name
+        if ($null -ne $input -and $input.Current.IsEnabled) {
+            return $input
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw "The native GUI text input '$Name' did not become available."
+}
+
+function Set-TextInputValue([string]$Name, [string]$Value) {
+    $input = Wait-ForTextInput $Name
+    $pattern = $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    $pattern.SetValue($Value)
+}
+
 function Click-NativeButton([string]$Name) {
     $button = Wait-ForButton $Name
     $window = Get-MainWindow
     $windowHandle = [IntPtr]$window.Current.NativeWindowHandle
-    $null = [NativeUiInput]::ShowWindow($windowHandle, 3)
+    # SW_RESTORE keeps acceptance at the app's normal window size instead of hiding layout issues by maximizing it.
+    $null = [NativeUiInput]::ShowWindow($windowHandle, 9)
     $null = [NativeUiInput]::SetForegroundWindow($windowHandle)
     Start-Sleep -Milliseconds 100
     $button = Wait-ForButton $Name
@@ -213,6 +265,24 @@ requires_openai_auth = true
     [System.IO.File]::WriteAllText((Join-Path $script:CodexHome "auth.json"), $subscriptionAuth, [System.Text.UTF8Encoding]::new($false))
     [System.IO.File]::WriteAllText((Join-Path $script:CodexHome "config.toml.bak-synthetic-api"), $apiConfig, [System.Text.UTF8Encoding]::new($false))
     [System.IO.File]::WriteAllText((Join-Path $script:CodexHome "auth.json.bak-synthetic-api"), '{"OPENAI_API_KEY":"synthetic-api-key"}', [System.Text.UTF8Encoding]::new($false))
+    $modelCatalog = @{
+        catalog_marker = "native-ui-synthetic"
+        models = @(
+            @{
+                slug = "synthetic-model-alpha"
+                display_name = "Synthetic Alpha"
+                visibility = "list"
+                default_reasoning_level = "high"
+                supported_reasoning_levels = @(
+                    @{ effort = "high"; description = "Synthetic high" },
+                    @{ effort = "low"; description = "Synthetic low" }
+                )
+                priority = 10
+                context_window = 65536
+            }
+        )
+    } | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText((Join-Path $script:CodexHome "models-codex.json"), $modelCatalog, [System.Text.UTF8Encoding]::new($false))
 
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
@@ -286,7 +356,33 @@ public static class NativeUiInput
         throw "The native GUI did not restore subscription authentication."
     }
 
-    Write-Output "V2 native Windows UI acceptance passed: initialize, target selection, preview, API apply, subscription restore, and shared-setting preservation."
+    Click-NativeButton "模型目录"
+    Click-NativeButton "读取 models-codex.json"
+    $null = Wait-ForButton "复制当前模型"
+    Click-NativeButton "复制当前模型"
+    Set-TextInputValue "模型 ID" "native-ui-cloned-model"
+    Set-TextInputValue "显示名称" "Native UI Cloned Model"
+    Click-NativeButton "保存模型选项"
+    $null = Wait-ForButtonDisabled "保存模型选项"
+
+    $savedCatalog = Get-Content -LiteralPath (Join-Path $script:CodexHome "models-codex.json") -Raw | ConvertFrom-Json
+    if ($savedCatalog.catalog_marker -ne "native-ui-synthetic" -or
+        $savedCatalog.models.Count -ne 2 -or
+        $savedCatalog.models[1].slug -ne "native-ui-cloned-model" -or
+        $savedCatalog.models[1].display_name -ne "Native UI Cloned Model" -or
+        $savedCatalog.models[1].context_window -ne 65536 -or
+        $savedCatalog.models[1].default_reasoning_level -ne "high") {
+        throw "The native GUI did not save the cloned model while preserving unknown metadata."
+    }
+    if (-not (Get-ChildItem -LiteralPath $script:CodexHome -Filter "models-codex.json.bak-*" -File)) {
+        throw "The native GUI did not back up the previous model catalog."
+    }
+
+    Write-Output "V2 native Windows UI acceptance passed: initialize, target selection, preview, API apply, subscription restore, shared-setting preservation, and model catalog load/clone/edit/save/backup."
+    if ($HoldWindowSeconds -gt 0) {
+        Write-Output "Keeping the isolated native test window open for $HoldWindowSeconds seconds for visual inspection."
+        Start-Sleep -Seconds $HoldWindowSeconds
+    }
 }
 finally {
     $env:PATH = $script:OriginalPath

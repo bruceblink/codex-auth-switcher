@@ -271,10 +271,11 @@ fn model_catalog_controls_load_clone_and_save_with_a_backup() {
     );
     wait_until_idle(&mut harness, &app);
 
-    app.borrow_mut().load_model_catalog();
+    click_button(&mut harness, "模型目录");
+    click_button(&mut harness, "读取 models-codex.json");
     wait_until_idle(&mut harness, &app);
     assert!(app.borrow().model_catalog.is_some());
-    app.borrow_mut().add_model_from_selected();
+    click_button(&mut harness, "复制当前模型");
     {
         let mut current = app.borrow_mut();
         let Some(catalog) = current.model_catalog.as_mut() else {
@@ -286,7 +287,7 @@ fn model_catalog_controls_load_clone_and_save_with_a_backup() {
         model.slug = "synthetic-model-2".into();
         model.display_name = "Synthetic Model Two".into();
     }
-    app.borrow_mut().save_model_catalog();
+    click_button(&mut harness, "保存模型选项");
     wait_until_idle(&mut harness, &app);
 
     let current: serde_json::Value = match fs::read(home.join("models-codex.json"))
