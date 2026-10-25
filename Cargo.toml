@@ -6,11 +6,11 @@ default-members = ["crates/switcher-desktop"]
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.95"
 repository = "https://github.com/bruceblink/codex-auth-switcher"
 
 [workspace.dependencies]
-gpui-kit = "=0.7.3"
+eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "system_fonts", "wayland", "x11"] }
 aes-gcm = "0.10"
 anyhow = "1"
 base64 = "0.22"

@@ -85,7 +85,7 @@ pub fn run() -> anyhow::Result<()> {
         if args.api_key_stdin {
             anyhow::bail!("--api-key-stdin requires preview or switch.");
         }
-        crate::app::run(store, args.demo || args.isolated);
+        crate::app::run(store, args.demo || args.isolated)?;
         return Ok(());
     }
     let result = match args.command {

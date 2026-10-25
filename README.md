@@ -1,99 +1,16 @@
 # Codex Auth Switcher
 
-Windows 桌面 Codex 的订阅与 API key 模式切换工具。第一版使用 Python、Tkinter、tomlkit 和 Windows DPAPI。
+Windows 桌面 Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust 版本。程序包含图形界面和命令行界面，不需要安装 Python、Rust 或 Ramag。
 
-本仓库还包含第二版：Rust + gpui-kit 独立桌面应用。第二版使用 AES-256-GCM 加密本地模式存档，密钥单独保存在用户状态目录。第一版说明保留在下文，作为已有实现和迁移参考。
+工具同时恢复 `config.toml` 的模式参数和 `auth.json` 的认证。工具不依赖、不修改 `autocode.config.toml`。MCP、项目、插件、代理和其他共享设置保留当前值。
 
-工具同时恢复 `config.toml` 的模式参数和 `auth.json` 的认证。它不依赖、不修改 `autocode.config.toml`。配置中的 MCP、项目、插件、代理和其他共享设置继续使用当前值。
+## 下载与启动
 
-## 安装与启动
+从 GitHub Actions 的 `Cross-platform checks` 工作流下载 `codex-auth-switcher-windows-x64` 便携包。解压后运行 `codex-auth-switcher.exe`。发布版本、SHA-256 与使用步骤见 [V2 用户指南](docs/06-v2-user-guide.md)。
 
-需要 Windows 和 Python 3.11+，Python 安装中需要包含 Tcl/Tk。
+## 本机构建
 
-```powershell
-py -3 -m pip install -e .
-py -3 .\main.py
-```
-
-也可以运行 `run-gui.cmd`。本版从源码启动，尚未提供独立安装包。
-
-## 初始化与切换
-
-1. 打开工具，确认主配置目录。默认使用 `CODEX_HOME` 或 `%USERPROFILE%\.codex`。
-2. 点击“初始化 / 补齐模式”。工具读取当前配置和已有 `config.toml.bak-*`、`auth.json.bak*`。已有加密状态不会被自动覆盖。
-3. 检查两种模式的 provider、模型、推理级别和认证状态。需要自定义来源时，使用“导入来源”菜单选择对应文件。
-4. 在正式切换前关闭桌面 Codex，避免 Codex 同时刷新配置或登录令牌。
-5. 点击目标模式。切换完成后重启 Codex，并开始新任务。
-
-状态“已就绪”只表示本机配置和认证结构完整。工具不会联网验证令牌是否过期、余额或网关可用性。缺少目标认证时停止切换。需要登录时，使用 Codex 自身的登录流程，再重新导入认证。
-
-## 配置与输入
-
-- 订阅默认 provider：`openai`。
-- API 默认 provider：`OpenAI`，默认地址：`https://vip.auto-code.net/v1`。
-- `openai` 与 `OpenAI` 是不同的 ID。初始化优先导入实际配置，不用项目默认值覆盖已有网关。
-- API 模式保留现有 provider 的地址和能力字段，使用 `requires_openai_auth = true` 从 `auth.json` 读取 key。旧 `env_key` 配置在提供有效 key 后转换为这个保存方式。
-- UI/CLI 显式输入优先于环境变量，再使用已保存模式和项目默认值。可用环境变量包括 `CODEX_MODEL_PROVIDER`、`CODEX_API_PROVIDER`、`AUTOCODE_BASE_URL`、`AUTOCODE_API_KEY`。
-- 空地址输入保留目标模式地址。环境变量 key 按当前进程、用户、系统顺序读取，最后兼容读取已有 `.codex/.env`。
-- API key 输入只显示首尾字符，中间使用 `·`。最终 key 写入 Codex 的 `auth.json`，模式存档通过 DPAPI 加密。工具不再向 `.env` 新增明文 key。
-- “记住 base_url 为默认值”只更新项目 `settings.json` 中的非敏感默认地址。
-
-模式状态保存在 `.codex/auth-switcher/modes.dpapi`。DPAPI 将数据绑定到当前 Windows 用户，不支持直接复制到其他账户使用。该目录不属于项目，不得提交到 Git。
-
-## 命令行
-
-```powershell
-py -3 main.py --target status
-py -3 main.py --target initialize
-py -3 main.py --target subscription
-py -3 main.py --target api
-```
-
-指定目录与初始化来源：
-
-```powershell
-py -3 main.py --codex-home C:\test\codex --target initialize --subscription-config C:\test\subscription.toml --subscription-auth C:\test\subscription-auth.json
-```
-
-API 切换支持 `--provider`、`--api-base-url`、`--remember-base-url` 和 `--api-key-stdin`。key 只能通过标准输入或环境变量提供，不能放在命令参数中。`--settings` 可指定独立的默认设置文件。
-
-## 备份与失败恢复
-
-- 配置变化前创建 `config.toml.bak-YYYYMMDD-HHmmss`。同秒操作使用数字后缀，已有备份不会被覆盖。
-- 如果当前 TOML 包含可识别的明文凭据，停止备份和切换，避免复制凭据。旧备份只提取模式参数，不恢复无关服务凭据。
-- 工具不创建新的明文 `auth.json` 备份。切换过程使用加密的 `pending.dpapi` 保存恢复记录。
-- 配置与认证分别原子写入。第二个文件写入失败时恢复先前状态。进程中断后，下次初始化或切换会尝试恢复。
-- 如果外部程序修改了文件，恢复会停止，不覆盖外部修改。保留 `pending.dpapi`，关闭 Codex 后处理冲突。
-- 文件检查不能锁住 Codex 自身；正式切换前关闭 Codex 是必要前提。
-
-## 旧会话与 401
-
-旧会话可能保存原始 provider。把主配置从 `openai` 改为 `OpenAI`，不能保证旧会话同步改变。若网关 key 被发往 `https://api.openai.com/v1/responses`，先检查实际请求地址和旧会话 provider，不要仅凭这个错误判断网关 key 无效。
-
-本版不修改 Codex 的 SQLite 数据库或历史会话。切换后重启 Codex并使用新任务。旧会话迁移与远程认证成功不在本版完成范围内。
-
-## 开发与验证
-
-```powershell
-py -3 -m unittest discover -s tests -v
-py -3 -m compileall -q main.py src tests
-py -3 tests/gui_acceptance.py
-```
-
-自动测试使用临时目录和虚构认证数据。GUI 验收程序使用被 Git 忽略的 `build/ui-acceptance` 目录，不操作真实 Codex。
-
-- [第一版开发范围](docs/01-development-plan.md)
-- [认证模式恢复计划](docs/02-auth-mode-recovery-plan.md)
-- [技术重评](docs/03-technology-review.md)
-- [第一版验证记录](docs/04-v1-validation.md)
-
-## 第二版
-
-第二版采用 Rust + gpui-kit 0.7.3。界面提供两种模式的状态、配置目录选择、TOML/JSON 来源导入、参数输入、变更预览和应用切换。文件读写和加密在后台执行。API key 输入框使用掩码，应用后清除输入。
-
-第二版存档位于 .codex/auth-switcher-v2/。modes.enc 和 pending.enc 使用 AES-256-GCM。vault.key 与密文分开保存，Windows 状态目录仅允许当前用户和 SYSTEM 访问；密钥缺失或验证失败时，工具停止并保留存档。Codex 读取的 auth.json 仍使用 Codex 格式。第一版 DPAPI 文件不会由第二版读取或覆盖。
-
-在 PowerShell 中运行：
+需要 Rust 工具链和 Windows MSVC 构建工具。
 
 ```powershell
 cargo run --locked
@@ -103,21 +20,47 @@ cargo run --locked -- --command preview --target api
 cargo run --locked -- --command switch --target api --api-key-stdin
 ```
 
-标准输入只用于提供 key，不会将 key 放入命令参数。可以用 --demo --codex-home <新目录> 创建合成数据，并用 --isolated 阻止读取宿主环境变量。演示目录必须是新目录。
+标准输入只用于提供 key。不要把 key 写入命令参数。可使用 `--demo --codex-home <新目录> --isolated` 创建合成测试环境；演示目录必须是新目录。
 
-第二版 headless 检查会在无原生窗口的测试环境中调度 GPUI 按钮事件，并用合成文件选择器覆盖导入流程。CI 和本机都可运行：
+## 项目结构
+
+仓库只保留一个 Cargo workspace。`switcher-core` crate 管理配置、加密存档和恢复；`switcher-desktop` crate 提供一个 egui 桌面程序和 CLI。界面协调代码位于 `app.rs`，控件布局位于 `app/ui.rs`，状态与错误文字位于 `app/format.rs`。UI 测试位于 `app/tests.rs`。这两个 crate 属于同一个 workspace，不是两套桌面实现。
+
+## 配置与安全边界
+
+- 订阅默认 provider：`openai`。
+- API 默认 provider：`OpenAI`，默认地址：`https://vip.auto-code.net/v1`。
+- `openai` 与 `OpenAI` 是不同的 ID。初始化会优先导入现有配置，不用默认值覆盖已有网关。
+- API 模式保留现有 provider 地址和能力字段，并通过 `requires_openai_auth = true` 从 `auth.json` 读取 key。
+- UI/CLI 显式输入优先于环境变量，再使用已保存模式和项目默认值。
+- API key 输入框遮盖密钥。应用后输入内容会清除。
+- 本地模式存档位于 `.codex/auth-switcher-v2/`。`modes.enc` 与 `pending.enc` 使用 AES-256-GCM；`vault.key` 与密文分开保存。
+- Windows 状态目录只允许当前用户和 SYSTEM 访问。密钥缺失、密文认证失败或外部文件冲突时，程序停止并保留现有数据。
+- Codex 使用的 `auth.json` 继续采用 Codex 格式。程序不会向远程 API 发送请求，也不会验证认证是否有效。
+- 文件检查不能锁住 Codex 自身。切换前请关闭 Codex；切换后重启 Codex 并新建会话。
+
+旧 DPAPI 存档和第一版 Python 程序不由当前版本读取。若第一版留有未完成的 `pending.dpapi` 写入，先按历史版本流程恢复，再使用当前版本。
+
+## 验证
 
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 .\scripts\test-v2-headless.ps1
+.\scripts\package-windows.ps1
+.\scripts\test-v2-native-ui.ps1
 ```
 
-Windows CI 还会启动便携版真实窗口，通过 Windows UI Automation 选择目标模式、预览并应用 API/订阅往返。该检查只使用自动生成的隔离演示目录。
+GitHub Actions 在 Windows、Linux 和 macOS 运行格式检查、Clippy 和 workspace 测试。Windows runner 还会构建便携包，并运行 Headless 与原生窗口检查；Linux 和 macOS 暂不执行原生窗口验收或打包。自动测试使用临时目录和虚构认证数据。Headless 检查会驱动 GUI 按钮并验证隔离文件状态。Windows 原生窗口检查会启动便携程序，只操作自动生成的演示目录。
 
-版本二的开发范围、验收条件与回滚边界见 [第二版开发计划](docs/05-v2-gpui-kit-development-plan.md)。egui/eframe、gpui-kit、Electron 等方案的评估见 [技术重评](docs/03-technology-review.md)。
+## 文档
 
-Release 构建完成后，可用 `scripts/package-windows.ps1` 生成 Windows 便携 ZIP 和 SHA-256 文件。压缩包包含独立可执行文件和 [V2 用户指南](docs/06-v2-user-guide.md)，运行时不要求 Python、Rust 或 Ramag。
+- [认证模式恢复历史计划](docs/02-auth-mode-recovery-plan.md)
+- [技术重评](docs/03-technology-review.md)
+- [第一版验证历史](docs/04-v1-validation.md)
+- [Rust + egui 开发计划](docs/08-v2-egui-development-plan.md)
+- [V2 用户指南](docs/06-v2-user-guide.md)
+- [egui 与 gpui-kit 维护成本评估](docs/07-egui-maintenance-evaluation.md)
 
-工具不发送远程请求、不自动登录、不自动关闭 Codex。当前仅支持 Windows 的文件认证存储，不支持系统钥匙串认证、跨账户迁移和无人值守登录。
+第一版开发和验证文档只作为历史记录，不代表仓库仍维护 Python 代码。当前项目仅支持 Windows 文件认证存储，不支持系统钥匙串、跨账户迁移或无人值守登录。

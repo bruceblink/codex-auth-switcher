@@ -1,5 +1,7 @@
 # 认证模式恢复计划
 
+> 历史文档。第一版 Python 实现已从当前分支删除。当前 Rust 代码和安全说明以 README 与 V2 用户指南为准。
+
 ## 范围与依据
 
 当前 API 模式使用 `OpenAI` provider 和 `auth.json` 中的 API key。切换前的订阅配置使用 `openai` provider，订阅认证仍保存在已有 `auth.json.bak` 中。两种模式还使用不同的模型、推理级别和上下文参数。原来的单字段切换不能恢复认证。

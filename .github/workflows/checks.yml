@@ -1,4 +1,4 @@
-name: Windows checks
+name: Cross-platform checks
 
 on:
   push:
@@ -9,12 +9,38 @@ permissions:
 
 jobs:
   rust:
-    runs-on: windows-latest
+    name: Rust checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libdbus-1-dev \
+            libegl1-mesa-dev \
+            libfontconfig1-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxrandr-dev \
+            pkg-config
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run Clippy
@@ -22,12 +48,16 @@ jobs:
       - name: Run Rust tests
         run: cargo test --workspace --locked
       - name: Build and package Windows release
+        if: runner.os == 'Windows'
         run: .\scripts\package-windows.ps1
       - name: Test packaged CLI without host credentials
+        if: runner.os == 'Windows'
         run: .\scripts\test-v2-headless.ps1
       - name: Test packaged native Windows UI
+        if: runner.os == 'Windows'
         run: .\scripts\test-v2-native-ui.ps1 -ExecutablePath .\target\release\codex-auth-switcher.exe
       - name: Upload portable package
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: codex-auth-switcher-windows-x64
@@ -35,19 +65,3 @@ jobs:
             dist/*.zip
             dist/*.sha256
           if-no-files-found: error
-
-  test:
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        python-version: ['3.11', '3.14']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -e '.[dev]'
-      - run: python -m ruff check .
-      - run: python -m ruff format --check main.py src tests
-      - run: python -m unittest discover -s tests -v
-      - run: python -m compileall -q main.py src tests

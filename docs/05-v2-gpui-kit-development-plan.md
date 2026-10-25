@@ -1,5 +1,7 @@
 # 第二版 GPUI Kit 开发计划
 
+> 历史计划，记录 2026-10-24 至 2026-10-25 的 GPUI Kit 实现与验收。当前实现已改为 Rust + egui/eframe；现行开发和验收范围见 [egui 开发计划](08-v2-egui-development-plan.md) 与 [框架维护成本评估](07-egui-maintenance-evaluation.md)。
+
 日期：2026-10-24。第一版基线：`d2bb002`。第二版按用户决定使用 Rust + gpui-kit。
 
 ## 范围与选择

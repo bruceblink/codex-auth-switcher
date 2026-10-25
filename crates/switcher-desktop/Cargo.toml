@@ -14,7 +14,7 @@ workspace = true
 
 [dependencies]
 switcher-core = { path = "../switcher-core" }
-gpui-kit.workspace = true
+eframe.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 rfd = "0.15"
@@ -23,6 +23,4 @@ tempfile.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-gpui-test = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
-gpui-base = { version = "=0.7.3", features = ["test-support"] }
-gpui-component = { version = "=0.7.3", features = ["test-support"] }
+egui_kittest = "=0.37.0"
