@@ -561,8 +561,8 @@ pub fn run(store: Store) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Codex Auth Switcher v2")
-            .with_inner_size([920.0, 720.0])
-            .with_min_inner_size([720.0, 600.0]),
+            .with_inner_size([920.0, 640.0])
+            .with_min_inner_size([720.0, 560.0]),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };

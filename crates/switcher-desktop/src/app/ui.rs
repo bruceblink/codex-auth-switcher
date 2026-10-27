@@ -58,6 +58,7 @@ impl SwitcherApp {
                 ui.horizontal(|ui| {
                     ui.strong("模式存档");
                     ui.add_space(8.0);
+                    ui.weak("切换时使用对应的参数和认证");
                     let label = if initialized {
                         "补齐模式"
                     } else {
@@ -166,6 +167,7 @@ impl SwitcherApp {
                         }
                     });
                     ui.small(masked_hint(&self.key));
+                    ui.weak("留空时使用目标模式的已保存认证；输入新 key 后会在应用时保存到当前用户环境。");
                 }
 
                 if let Some(prepared) = &self.prepared {
