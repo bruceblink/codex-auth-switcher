@@ -16,7 +16,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy, rustfmt
@@ -55,7 +55,7 @@ jobs:
         run: .\scripts\test-v2-native-ui.ps1 -ExecutablePath .\target\release\codex-auth-switcher.exe
       - name: Upload portable package
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: codex-auth-switcher-windows-x64
           path: |
