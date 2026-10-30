@@ -14,7 +14,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            artifact: codex-auth-switcher-windows-x64
+          - os: ubuntu-latest
+            artifact: codex-auth-switcher-linux
+          - os: macos-latest
+            artifact: codex-auth-switcher-macos
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -50,15 +56,16 @@ jobs:
       - name: Build and package Windows release
         if: runner.os == 'Windows'
         run: .\scripts\package-windows.ps1
+      - name: Build and package Unix release
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./scripts/package-unix.sh
       - name: Test packaged native Windows UI
         if: runner.os == 'Windows'
         run: .\scripts\test-v2-native-ui.ps1 -ExecutablePath .\target\release\codex-auth-switcher.exe
-      - name: Upload portable package
-        if: runner.os == 'Windows'
+      - name: Upload platform release
         uses: actions/upload-artifact@v7
         with:
-          name: codex-auth-switcher-windows-x64
-          path: |
-            dist/*.zip
-            dist/*.sha256
+          name: ${{ matrix.artifact }}
+          path: dist/*
           if-no-files-found: error

@@ -55,7 +55,13 @@ New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 $archiveName = "codex-auth-switcher-v$($package.version)-windows-$architecture.zip"
 $archivePath = Join-Path $outputPath $archiveName
 $checksumPath = "$archivePath.sha256"
-if ((Test-Path -LiteralPath $archivePath) -or (Test-Path -LiteralPath $checksumPath)) {
+$binaryName = "codex-auth-switcher-v$($package.version)-windows-$architecture.exe"
+$releaseBinaryPath = Join-Path $outputPath $binaryName
+$binaryChecksumPath = "$releaseBinaryPath.sha256"
+if ((Test-Path -LiteralPath $archivePath) -or
+    (Test-Path -LiteralPath $checksumPath) -or
+    (Test-Path -LiteralPath $releaseBinaryPath) -or
+    (Test-Path -LiteralPath $binaryChecksumPath)) {
     throw "The package output already exists. Choose another output directory or move the previous package."
 }
 
@@ -64,15 +70,21 @@ New-Item -ItemType Directory -Path $stagePath | Out-Null
 try {
     Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $stagePath "codex-auth-switcher.exe")
     Copy-Item -LiteralPath $guidePath -Destination (Join-Path $stagePath "README.md")
+    Copy-Item -LiteralPath $binaryPath -Destination $releaseBinaryPath
     Compress-Archive -Path (Join-Path $stagePath "*") -DestinationPath $archivePath -CompressionLevel Optimal
 
     $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     $checksum = "$hash  $archiveName"
     [System.IO.File]::WriteAllText($checksumPath, $checksum, [System.Text.UTF8Encoding]::new($false))
+    $binaryHash = (Get-FileHash -LiteralPath $releaseBinaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $binaryChecksum = "$binaryHash  $binaryName"
+    [System.IO.File]::WriteAllText($binaryChecksumPath, $binaryChecksum, [System.Text.UTF8Encoding]::new($false))
 
     [pscustomobject]@{
         Archive = $archivePath
         Sha256 = $hash
+        Binary = $releaseBinaryPath
+        BinarySha256 = $binaryHash
         Target = $target
         Version = $package.version
     }
@@ -83,6 +95,12 @@ catch {
     }
     if (Test-Path -LiteralPath $checksumPath) {
         Remove-Item -LiteralPath $checksumPath
+    }
+    if (Test-Path -LiteralPath $releaseBinaryPath) {
+        Remove-Item -LiteralPath $releaseBinaryPath
+    }
+    if (Test-Path -LiteralPath $binaryChecksumPath) {
+        Remove-Item -LiteralPath $binaryChecksumPath
     }
     throw
 }

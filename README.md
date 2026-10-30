@@ -48,7 +48,7 @@ cargo test --workspace --locked
 .\scripts\test-v2-native-ui.ps1
 ```
 
-GitHub Actions 在 Windows、Linux 和 macOS 运行格式检查、Clippy 和 workspace 测试。Windows runner 还会构建便携包并运行原生窗口验收。原生验收只使用临时目录和合成认证数据。
+Linux/macOS 本地打包可运行 `./scripts/package-unix.sh`。GitHub Actions 在 Windows、Linux 和 macOS 运行格式检查、Clippy、workspace 测试，并上传三个 runner 对应的 Release 可执行文件、归档包和 SHA-256 校验文件。Windows runner 还会运行原生窗口验收；原生验收只使用临时目录和合成认证数据。
 
 ## 文档
 

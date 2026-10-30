@@ -19,7 +19,7 @@ GPUI Kit 的组件样式和视觉完成度优于当前 egui 界面。这是已�
 
 ## 平台与发布
 
-当前正式发布目标为 Windows x64 MSVC 便携 ZIP。该包不安装服务或系统启动项。Windows Release 窗口已在本机 100% 显示缩放下完成视觉和功能验收，并在隔离的临时 `CODEX_HOME` 中通过原生文件选择器导入合成配置。跨平台 CI 对 Windows、Linux 和 macOS 运行格式检查、Clippy 与 workspace 测试；Windows CI 还构建便携包并运行原生窗口验收。Linux 和 macOS 的 GUI 运行、代码签名、安装程序、自动更新和系统钥匙串不属于当前已验证范围。
+当前 Windows 发布包为 Windows x64 MSVC 便携 ZIP；CI 同时生成 Linux 和 macOS runner 架构的 Release 可执行文件与 `tar.gz` 归档。构件不安装服务或系统启动项。Windows Release 窗口已在本机 100% 显示缩放下完成视觉和功能验收，并在隔离的临时 `CODEX_HOME` 中通过原生文件选择器导入合成配置。跨平台 CI 对 Windows、Linux 和 macOS 运行格式检查、Clippy 与 workspace 测试；Windows CI 还运行原生窗口验收。Linux 和 macOS 的 GUI 视觉验收、代码签名、安装程序、自动更新和系统钥匙串不属于当前已验证范围。
 
 相关文档：
 

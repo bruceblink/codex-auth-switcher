@@ -4,7 +4,7 @@
 
 ## 1. 目标与当前基线
 
-项目维护一个 Rust 图形界面版本。桌面层使用 egui/eframe 0.37.0 和 Wgpu，业务核心由独立的 `switcher-core` crate 提供。Windows x64 是当前发布目标；Release 程序使用 Windows GUI 子系统，不打开终端窗口。
+项目维护一个 Rust 图形界面版本。桌面层使用 egui/eframe 0.37.0 和 Wgpu，业务核心由独立的 `switcher-core` crate 提供。Windows x64 是当前原生验收目标；CI 同时为 Windows、Linux 和 macOS runner 生成对应架构的 Release 可执行文件。
 
 当前基线已经覆盖模式存档、配置预览、认证切换、失败恢复、模型目录编辑和 Windows 原生窗口验收。CLI、Python 第一版、GPUI 运行依赖及其专用入口已从当前 workspace 移除；相关记录保留在历史文档中。
 
@@ -70,6 +70,8 @@ cargo test --workspace --locked
 .\scripts\test-v2-native-ui.ps1
 ```
 
+Linux/macOS 打包命令为 `./scripts/package-unix.sh`。CI 产物包含版本化可执行文件、带用户指南的 `tar.gz` 归档和对应 SHA-256 文件；Windows 产物还包含便携 ZIP。
+
 ### 4.3 Windows 原生验收
 
 原生脚本使用隔离临时目录和合成认证数据，验证：
@@ -86,12 +88,12 @@ cargo test --workspace --locked
 
 ### P1 发布质量维护
 
-- 每次发布运行格式检查、Clippy、workspace 测试、Windows 便携包构建和原生验收。
+- 每次发布运行格式检查、Clippy、workspace 测试，生成 Windows、Linux 和 macOS Release 构件，并在 Windows 上运行便携包和原生验收。
 - 本地和 CI 使用仓库锁定的 Rust 1.95 工具链，保持 MSRV、格式检查和 Clippy 结果一致。
 - 记录 Windows 原生窗口截图、版本号、构建产物和隔离目录检查结果。
 - 保持 `main` 分支只包含已验证的提交，发布包不依赖 Python、Rust 或包管理器环境。
 
-退出标准：五条验证命令全部通过，便携包可在干净 Windows 环境启动，原生验收目录中没有真实凭据。
+退出标准：检查命令和三平台构建全部通过，Windows 便携包可在干净环境启动，原生验收目录中没有真实凭据。
 
 ### P2 Codex 配置兼容性维护
 
