@@ -2,7 +2,7 @@ use eframe::egui::{self, Color32, RichText, TextEdit};
 
 use super::{
     ImportSources, Mode, PreparedSwitch, ReasoningLevel, SwitcherApp,
-    format::{auth_source_name, masked_hint, mode_name},
+    format::{auth_source_name, config_field_name, masked_hint, mode_name, setting_value},
 };
 
 impl SwitcherApp {
@@ -16,13 +16,34 @@ impl SwitcherApp {
             .status
             .as_ref()
             .is_some_and(|status| status.recovery_pending);
+        let target_ready = self.status.as_ref().is_some_and(|status| {
+            status
+                .modes
+                .iter()
+                .find(|profile| profile.mode == self.target)
+                .is_some_and(|profile| profile.ready)
+        });
         let directory_needs_refresh = self.directory_needs_refresh;
         let enabled = !self.busy;
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.heading("Codex Auth Switcher");
             ui.label("认证与模型配置");
             ui.label("v0.2.0");
+            let (status_text, status_color) = if self.busy {
+                ("处理中", Color32::from_rgb(44, 113, 160))
+            } else if recovery_pending {
+                ("需要恢复", Color32::from_rgb(163, 102, 36))
+            } else if directory_needs_refresh {
+                ("等待刷新", Color32::from_rgb(163, 102, 36))
+            } else if !initialized {
+                ("未初始化", Color32::from_rgb(163, 102, 36))
+            } else if !target_ready {
+                ("目标待补齐", Color32::from_rgb(163, 102, 36))
+            } else {
+                ("已就绪", Color32::from_rgb(47, 125, 84))
+            };
+            ui.colored_label(status_color, status_text);
             if ui.button("模型目录").clicked() {
                 self.catalog_window_open = true;
             }
@@ -54,7 +75,10 @@ impl SwitcherApp {
                         self.pick_folder();
                     }
                     if ui
-                        .add_enabled(enabled, egui::Button::new("刷新状态"))
+                        .add_enabled(
+                            enabled && !self.catalog_dirty,
+                            egui::Button::new("刷新状态"),
+                        )
                         .clicked()
                     {
                         self.refresh();
@@ -62,6 +86,8 @@ impl SwitcherApp {
                 });
                 if directory_needs_refresh {
                     ui.small("配置目录已修改，请点击“刷新状态”读取新目录后再预览切换。");
+                } else if self.catalog_dirty {
+                    ui.small("模型目录有未保存改动；保存或放弃改动后才能切换配置目录。");
                 }
 
                 ui.add_space(12.0);
@@ -88,6 +114,16 @@ impl SwitcherApp {
                                 "检测到上次切换未完成。请先点击“补齐模式”恢复，再预览或应用切换。",
                             );
                         });
+                } else if !initialized && !directory_needs_refresh {
+                    egui::Frame::group(ui.style())
+                        .fill(Color32::from_rgb(236, 245, 252))
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.colored_label(
+                                Color32::from_rgb(38, 91, 125),
+                                "还没有模式存档。先点击“初始化模式”，再选择目标模式并预览切换。",
+                            );
+                        });
                 }
                 ui.columns(2, |columns| {
                     self.mode_card(&mut columns[0], Mode::Subscription);
@@ -105,8 +141,25 @@ impl SwitcherApp {
                                 ui.label("·");
                                 ui.label(&status.model);
                                 ui.label("·");
-                                ui.label(&status.effort);
+                                ui.label(setting_value(&status.effort));
                             });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.weak("上下文");
+                                ui.label(setting_value(&status.context_window));
+                                ui.label("·");
+                                ui.weak("详细度");
+                                ui.label(setting_value(&status.verbosity));
+                                ui.label("·");
+                                ui.weak("服务层级");
+                                ui.label(setting_value(&status.service_tier));
+                            });
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!("配置文件：{}", status.config_path))
+                                        .weak(),
+                                )
+                                .wrap(),
+                            );
                         });
                 }
 
@@ -147,6 +200,28 @@ impl SwitcherApp {
                         self.pick_file(true);
                     }
                 });
+                let target_issue = self
+                    .status
+                    .as_ref()
+                    .and_then(|status| {
+                        status
+                            .modes
+                            .iter()
+                            .find(|profile| profile.mode == self.target)
+                    })
+                    .filter(|profile| !profile.ready)
+                    .map(|profile| profile.issue.clone());
+                if let Some(issue) = target_issue {
+                    egui::Frame::group(ui.style())
+                        .fill(Color32::from_rgb(255, 244, 224))
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.colored_label(
+                                Color32::from_rgb(142, 84, 20),
+                                format!("目标模式还不能切换：{issue}"),
+                            );
+                        });
+                }
                 if self.target == Mode::Api {
                     text_field(
                         &mut self.prepared,
@@ -174,17 +249,24 @@ impl SwitcherApp {
                     );
                     ui.horizontal(|ui| {
                         let label = ui.label("API key");
+                        let key_width = (ui.available_width() - 62.0).max(140.0);
                         let response = ui
                             .add_enabled(
                                 enabled,
                                 TextEdit::singleline(&mut *self.key)
                                     .id_salt(("api-key", self.key_epoch))
                                     .password(true)
-                                    .desired_width(f32::INFINITY),
+                                    .desired_width(key_width),
                             )
                             .labelled_by(label.id);
                         if response.changed() {
                             self.prepared = None;
+                        }
+                        if ui
+                            .add_enabled(enabled && !self.key.is_empty(), egui::Button::new("清空"))
+                            .clicked()
+                        {
+                            self.clear_key();
                         }
                     });
                     ui.small(masked_hint(&self.key));
@@ -199,10 +281,14 @@ impl SwitcherApp {
                         .num_columns(3)
                         .striped(true)
                         .show(ui, |ui| {
+                            ui.strong("字段");
+                            ui.strong("当前");
+                            ui.strong("目标");
+                            ui.end_row();
                             for change in &prepared.preview.changes {
-                                ui.label(&change.field);
-                                ui.label(&change.before);
-                                ui.label(&change.after);
+                                ui.label(config_field_name(&change.field));
+                                ui.label(setting_value(&change.before));
+                                ui.label(setting_value(&change.after));
                                 ui.end_row();
                             }
                         });
@@ -269,7 +355,7 @@ impl SwitcherApp {
                 let card_width = ui.available_width();
                 ui.set_min_width(card_width);
                 ui.set_max_width(card_width);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.strong(mode_name(mode));
                     ui.add_space(8.0);
                     let is_current = self
@@ -288,13 +374,19 @@ impl SwitcherApp {
                 if let Some(saved) = saved {
                     ui.add_space(6.0);
                     ui.separator();
-                    mode_card_field(ui, "Provider", &saved.provider);
-                    mode_card_field(ui, "模型", &saved.model);
-                    mode_card_field(ui, "推理级别", &saved.effort);
-                    mode_card_field(ui, "配置", &saved.config_source);
+                    mode_card_field(ui, "Provider", setting_value(&saved.provider));
+                    mode_card_field(ui, "模型", setting_value(&saved.model));
+                    mode_card_field(ui, "推理级别", setting_value(&saved.effort));
+                    mode_card_field(ui, "上下文窗口", setting_value(&saved.context_window));
+                    mode_card_field(ui, "模型详细度", setting_value(&saved.verbosity));
+                    mode_card_field(ui, "服务层级", setting_value(&saved.service_tier));
+                    if !saved.base_url.is_empty() {
+                        mode_card_field(ui, "Base URL", &saved.base_url);
+                    }
+                    mode_card_field(ui, "配置来源", &saved.config_source);
                     mode_card_field(
                         ui,
-                        "认证",
+                        "认证来源",
                         if saved.auth_source.is_empty() {
                             "缺失"
                         } else {
@@ -356,9 +448,21 @@ impl SwitcherApp {
                     {
                         self.save_model_catalog();
                     }
+                    if ui
+                        .add_enabled(
+                            enabled && self.catalog_dirty,
+                            egui::Button::new("放弃改动"),
+                        )
+                        .clicked()
+                    {
+                        self.discard_model_catalog();
+                    }
                     ui.add_space(6.0);
                     if self.catalog_dirty {
-                        ui.colored_label(Color32::from_rgb(163, 77, 32), "有未保存的改动");
+                        ui.colored_label(
+                            Color32::from_rgb(163, 77, 32),
+                            "有未保存的改动",
+                        );
                     } else if self.model_catalog.is_some() {
                         ui.weak("已读取");
                     }

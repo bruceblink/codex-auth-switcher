@@ -21,6 +21,41 @@ pub(super) fn auth_source_name(source: &str) -> &str {
     }
 }
 
+pub(super) fn config_field_name(field: &str) -> &str {
+    match field {
+        "model_provider" => "Provider",
+        "model" => "模型",
+        "model_reasoning_effort" => "推理级别",
+        "plan_mode_reasoning_effort" => "计划模式推理级别",
+        "model_reasoning_summary" => "推理摘要",
+        "model_supports_reasoning_summaries" => "支持推理摘要",
+        "model_context_window" => "上下文窗口",
+        "model_auto_compact_token_limit" => "自动压缩阈值",
+        "model_catalog_json" => "模型目录",
+        "disable_response_storage" => "禁用响应存储",
+        "service_tier" => "服务层级",
+        "personality" => "个性",
+        "forced_login_method" => "登录方式限制",
+        "forced_chatgpt_workspace_id" => "工作区限制",
+        "model_verbosity" => "模型详细度",
+        "model_auto_compact_token_limit_scope" => "压缩阈值范围",
+        "model_post_turn_compact_threshold_percent" => "回合后压缩阈值",
+        "model_instructions_file" => "模型指令文件",
+        "review_model" => "审查模型",
+        "chatgpt_base_url" => "ChatGPT 地址",
+        "oss_provider" => "OSS provider",
+        other => other,
+    }
+}
+
+pub(super) fn setting_value(value: &str) -> &str {
+    match value {
+        "(default)" => "默认",
+        "(configured)" => "已配置",
+        value => value,
+    }
+}
+
 pub(super) fn masked_hint(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
     if chars.is_empty() {

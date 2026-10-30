@@ -466,6 +466,15 @@ impl SwitcherApp {
         self.error = false;
     }
 
+    fn discard_model_catalog(&mut self) {
+        self.model_catalog = None;
+        self.selected_model = 0;
+        self.reasoning_levels_text.clear();
+        self.catalog_dirty = false;
+        self.message = "已放弃模型目录改动。重新读取后可继续编辑。".into();
+        self.error = false;
+    }
+
     fn apply(&mut self) {
         let Some(prepared) = self.prepared.take() else {
             return;

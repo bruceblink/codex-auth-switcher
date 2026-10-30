@@ -21,7 +21,30 @@ pub const MODE_FIELDS: &[&str] = &[
     "personality",
     "forced_login_method",
     "forced_chatgpt_workspace_id",
+    "model_verbosity",
+    "model_auto_compact_token_limit_scope",
+    "model_post_turn_compact_threshold_percent",
+    "model_instructions_file",
+    "review_model",
+    "chatgpt_base_url",
+    "oss_provider",
 ];
+
+/// Optional fields introduced by newer Codex versions. Older encrypted profiles
+/// do not contain them, so applying one must keep the active value intact.
+pub const OPTIONAL_MODE_FIELDS: &[&str] = &[
+    "model_verbosity",
+    "model_auto_compact_token_limit_scope",
+    "model_post_turn_compact_threshold_percent",
+    "model_instructions_file",
+    "review_model",
+    "chatgpt_base_url",
+    "oss_provider",
+];
+
+pub fn is_optional_mode_field(field: &str) -> bool {
+    OPTIONAL_MODE_FIELDS.contains(&field)
+}
 
 pub fn parse(bytes: &[u8]) -> Result<DocumentMut> {
     let text = std::str::from_utf8(bytes).map_err(|_| Error("Configuration must be UTF-8."))?;
@@ -117,9 +140,10 @@ pub fn apply(current: &[u8], snapshot: &str) -> Result<Vec<u8>> {
             Some(item) => {
                 document[field] = item.clone();
             }
-            None => {
+            None if !is_optional_mode_field(field) => {
                 document.remove(field);
             }
+            None => {}
         }
     }
     let name = provider(&target)?;
@@ -294,9 +318,21 @@ pub fn has_credentials(item: &Item) -> bool {
 }
 
 pub fn summary(doc: &DocumentMut, field: &str) -> Result<String> {
-    let text = doc.get(field).and_then(Item::as_str).unwrap_or("(default)");
+    let text = if let Some(item) = doc.get(field) {
+        if let Some(value) = item.as_str() {
+            value.to_string()
+        } else if let Some(value) = item.as_integer() {
+            value.to_string()
+        } else if let Some(value) = item.as_bool() {
+            value.to_string()
+        } else {
+            "(configured)".to_string()
+        }
+    } else {
+        "(default)".to_string()
+    };
     if text.len() > 160 || text.chars().any(char::is_control) {
         return Err(Error("Invalid model metadata."));
     }
-    Ok(text.to_string())
+    Ok(text)
 }

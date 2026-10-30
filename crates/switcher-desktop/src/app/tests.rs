@@ -155,6 +155,9 @@ fn controls_initialize_import_preview_and_switch_both_modes() {
 
     click_button(&mut harness, "API key");
     app.borrow_mut().key = Zeroizing::new("synthetic-input-ui-key".into());
+    click_button(&mut harness, "清空");
+    assert!(app.borrow().key.is_empty());
+    app.borrow_mut().key = Zeroizing::new("synthetic-input-ui-key".into());
     click_button(&mut harness, "预览变更");
     wait_until_idle(&mut harness, &app);
     assert!(app.borrow().prepared.is_some());

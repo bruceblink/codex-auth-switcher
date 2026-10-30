@@ -27,6 +27,7 @@ cargo build --release --locked
 - API 默认 provider：`OpenAI`，默认地址：`https://vip.auto-code.net/v1`。
 - `openai` 与 `OpenAI` 是不同的 ID。初始化会优先导入现有配置，不用默认值覆盖已有网关。
 - API 模式保留现有 provider 地址和能力字段，并通过 `requires_openai_auth = true` 从 `auth.json` 读取 key。
+- 模式快照会保留 Codex 的模型详细度、自动压缩设置、模型指令文件、审查模型以及 ChatGPT/OSS provider 字段；旧存档缺少这些字段时沿用活动配置。
 - API key 只从输入框或已保存认证读取。程序不会读取 `AUTOCODE_API_KEY` 或 provider 的 `env_key` 环境变量。输入框里的密钥成功应用后，程序会写入 Windows 当前用户的持久环境变量 `AUTOCODE_API_KEY`；切换失败时不会写入。预览会显示认证来源，不显示密钥。应用后输入内容会清除。
 - “Codex 模型目录”可以维护 `models-codex.json` 的模型 ID、显示名称、可见性、优先级、默认推理级别和支持的推理级别。新增条目会复制所选模型的其他能力字段。保存前会检查字段和重复 ID，并创建不覆盖的 `models-codex.json.bak-*` 备份；检测到文件被其他程序修改时会拒绝保存。
 - 本地模式存档位于 `.codex/auth-switcher-v2/`。`modes.enc` 与 `pending.enc` 使用 AES-256-GCM；`vault.key` 与密文分开保存。

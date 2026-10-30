@@ -140,6 +140,62 @@ fn same_mode_is_noop_without_backup() -> anyhow::Result<()> {
 }
 
 #[test]
+fn newer_codex_mode_fields_survive_older_profiles() -> anyhow::Result<()> {
+    let current = r#"
+model_provider = "OpenAI"
+model = "current-model"
+model_verbosity = "high"
+model_auto_compact_token_limit_scope = "carried_prefix"
+model_post_turn_compact_threshold_percent = 75
+model_instructions_file = "current-instructions.md"
+review_model = "current-review-model"
+chatgpt_base_url = "https://chatgpt.example.invalid"
+oss_provider = "current-oss"
+"#;
+    let current_doc = config::parse(current.as_bytes())?;
+    let fragment = config::fragment(&current_doc)?;
+    for &field in config::OPTIONAL_MODE_FIELDS {
+        assert!(fragment.contains(field), "fragment omitted {field}");
+    }
+
+    let older_profile = r#"
+model_provider = "OpenAI"
+model = "older-model"
+"#;
+    let preserved = config::apply(current.as_bytes(), older_profile)?;
+    let preserved_doc = config::parse(&preserved)?;
+    assert_eq!(preserved_doc["model_verbosity"].as_str(), Some("high"));
+    assert_eq!(
+        preserved_doc["model_post_turn_compact_threshold_percent"].as_integer(),
+        Some(75)
+    );
+    assert_eq!(
+        preserved_doc["model_instructions_file"].as_str(),
+        Some("current-instructions.md")
+    );
+
+    let newer_profile = r#"
+model_provider = "OpenAI"
+model = "newer-model"
+model_verbosity = "low"
+model_post_turn_compact_threshold_percent = 40
+"#;
+    let applied = config::apply(current.as_bytes(), newer_profile)?;
+    let applied_doc = config::parse(&applied)?;
+    assert_eq!(applied_doc["model"].as_str(), Some("newer-model"));
+    assert_eq!(applied_doc["model_verbosity"].as_str(), Some("low"));
+    assert_eq!(
+        applied_doc["model_post_turn_compact_threshold_percent"].as_integer(),
+        Some(40)
+    );
+    assert_eq!(
+        applied_doc["model_instructions_file"].as_str(),
+        Some("current-instructions.md")
+    );
+    Ok(())
+}
+
+#[test]
 fn leaving_mode_saves_refreshed_tokens_and_user_edits() -> anyhow::Result<()> {
     let data = Data::new()?;
     data.initialize()?;
