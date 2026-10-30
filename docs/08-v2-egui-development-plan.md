@@ -17,7 +17,9 @@
 | M3 桌面界面 | 目录选择、后台任务、错误本地化、密钥遮罩、模式卡片和变更预览 | 已完成 |
 | M4 模型目录 | `models-codex.json` 读取、复制、编辑、校验、冲突检测和不覆盖备份 | 已完成 |
 | M5 Windows 验收 | 隔离 `CODEX_HOME`、真实窗口、原生文件选择器、模式往返和模型目录保存 | 已完成 |
-| M6 发布维护 | 多平台 CI、便携包、原生验收和版本发布检查 | 持续维护 |
+| M6 发布维护 | 多平台 CI、便携包、原生验收和版本发布检查 | 持续维护；本轮已通过 |
+
+本轮 P1 验证已于 2026-10-30 完成：GitHub Actions 运行 [41010937394](https://github.com/bruceblink/codex-auth-switcher/actions/runs/41010937394) 使用 Rust 1.95，在 macOS、Ubuntu 和 Windows 上通过格式检查、Clippy 和 workspace 测试；Windows 还通过便携包构建、原生 UI 验收并上传构件。
 
 ## 3. 当前实现范围
 
