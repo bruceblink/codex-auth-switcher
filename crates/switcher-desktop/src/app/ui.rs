@@ -12,6 +12,11 @@ impl SwitcherApp {
             .status
             .as_ref()
             .is_some_and(|status| status.initialized);
+        let recovery_pending = self
+            .status
+            .as_ref()
+            .is_some_and(|status| status.recovery_pending);
+        let directory_needs_refresh = self.directory_needs_refresh;
         let enabled = !self.busy;
 
         ui.horizontal(|ui| {
@@ -33,11 +38,13 @@ impl SwitcherApp {
                     let path_width = (ui.available_width() - 180.0).max(120.0);
                     let response = ui
                         .add_enabled(
-                            enabled,
+                            enabled && !self.catalog_dirty,
                             TextEdit::singleline(&mut self.directory).desired_width(path_width),
                         )
                         .labelled_by(label.id);
                     if response.changed() {
+                        self.directory_needs_refresh = true;
+                        self.status = None;
                         self.prepared = None;
                     }
                     if ui
@@ -53,6 +60,9 @@ impl SwitcherApp {
                         self.refresh();
                     }
                 });
+                if directory_needs_refresh {
+                    ui.small("配置目录已修改，请点击“刷新状态”读取新目录后再预览切换。");
+                }
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -68,6 +78,17 @@ impl SwitcherApp {
                         self.initialize(ImportSources::default());
                     }
                 });
+                if recovery_pending {
+                    egui::Frame::group(ui.style())
+                        .fill(Color32::from_rgb(255, 244, 224))
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.colored_label(
+                                Color32::from_rgb(142, 84, 20),
+                                "检测到上次切换未完成。请先点击“补齐模式”恢复，再预览或应用切换。",
+                            );
+                        });
+                }
                 ui.columns(2, |columns| {
                     self.mode_card(&mut columns[0], Mode::Subscription);
                     self.mode_card(&mut columns[1], Mode::Api);
@@ -185,6 +206,9 @@ impl SwitcherApp {
                                 ui.end_row();
                             }
                         });
+                    if prepared.preview.changes.is_empty() && !prepared.preview.auth_changes {
+                        ui.weak("没有检测到配置或认证变化。");
+                    }
                     if prepared.preview.auth_changes {
                         ui.small("认证：替换为目标认证");
                         ui.small(format!(
@@ -208,7 +232,13 @@ impl SwitcherApp {
                     };
                     ui.label(RichText::new(&self.message).color(color));
                     if ui
-                        .add_enabled(enabled && initialized, egui::Button::new("预览变更"))
+                        .add_enabled(
+                            enabled
+                                && initialized
+                                && !recovery_pending
+                                && !self.directory_needs_refresh,
+                            egui::Button::new("预览变更"),
+                        )
                         .clicked()
                     {
                         self.preview();

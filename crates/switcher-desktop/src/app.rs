@@ -18,7 +18,7 @@ use std::{
 };
 use switcher_core::{
     CodexModel, ImportSources, Mode, ModelCatalog, ModelCatalogSaveResult, Paths, PreparedSwitch,
-    ReasoningLevel, Status, Store, SwitchOptions, SwitchResult,
+    ReasoningLevel, Status, Store, SwitchOptions, SwitchResult, config,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -81,6 +81,7 @@ struct SwitcherApp {
     catalog_dirty: bool,
     catalog_window_open: bool,
     directory: String,
+    directory_needs_refresh: bool,
     subscription_provider: String,
     api_provider: String,
     endpoint: String,
@@ -112,7 +113,8 @@ impl SwitcherApp {
             catalog_window_open: false,
             subscription_provider: "openai".into(),
             api_provider: "OpenAI".into(),
-            endpoint: "https://gateway.example.com/v1".into(),
+            endpoint: config::DEFAULT_API_BASE_URL.into(),
+            directory_needs_refresh: false,
             key: Zeroizing::new(String::new()),
             key_epoch: 0,
             busy: false,
@@ -327,8 +329,10 @@ impl SwitcherApp {
                     self.model_catalog = None;
                     self.reasoning_levels_text.clear();
                     self.selected_model = 0;
+                    self.status = None;
                 }
                 self.store = self.store.with_paths(paths);
+                self.directory_needs_refresh = false;
                 true
             }
             Err(error) => {
@@ -374,6 +378,11 @@ impl SwitcherApp {
     }
 
     fn preview(&mut self) {
+        if self.directory_needs_refresh {
+            self.message = "配置目录已修改，请先刷新状态后再预览。".into();
+            self.error = true;
+            return;
+        }
         self.prepared = None;
         if !self.select_directory() {
             return;

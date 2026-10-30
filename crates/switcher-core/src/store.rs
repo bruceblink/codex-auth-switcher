@@ -846,7 +846,7 @@ fn api_template(current: &DocumentMut, endpoint: Option<&str>) -> Result<String>
     let mut doc = config::parse(config::fragment(current)?.as_bytes())?;
     doc["model_provider"] = value("OpenAI");
     doc.remove("model_providers");
-    let url = endpoint.unwrap_or("https://vip.auto-code.net/v1");
+    let url = endpoint.unwrap_or(config::DEFAULT_API_BASE_URL);
     config::endpoint(url)?;
     doc["model_providers"] = Item::Table(Table::new());
     let mut table = Table::new();

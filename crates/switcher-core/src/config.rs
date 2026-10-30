@@ -4,6 +4,8 @@ use crate::{Error, Mode, Result};
 use serde_json::Value as Json;
 use toml_edit::{DocumentMut, Item, Table, value};
 
+pub const DEFAULT_API_BASE_URL: &str = "https://vip.auto-code.net/v1";
+
 pub const MODE_FIELDS: &[&str] = &[
     "model_provider",
     "model",
