@@ -21,6 +21,8 @@
 
 本轮 P1 验证已于 2026-10-30 完成：GitHub Actions 运行 [41010937394](https://github.com/bruceblink/codex-auth-switcher/actions/runs/41010937394) 使用 Rust 1.95，在 macOS、Ubuntu 和 Windows 上通过格式检查、Clippy 和 workspace 测试；Windows 还通过便携包构建、原生 UI 验收并上传构件。
 
+本轮 P2 兼容性增量已在提交 `eb66be3` 完成，并由运行 [41016760218](https://github.com/bruceblink/codex-auth-switcher/actions/runs/41016760218) 验证。三平台检查全部通过；Windows 便携包和原生 UI 验收也通过。新增模式字段在旧快照缺失时沿用活动配置，并在目标快照提供时显示预览变化。
+
 ## 3. 当前实现范围
 
 ### 3.1 模式与认证
