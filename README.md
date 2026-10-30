@@ -10,7 +10,7 @@ Windows 桌面 Codex 的订阅与 API key 模式切换工具。本仓库只维�
 
 ## 本机构建
 
-需要 Rust 工具链和 Windows MSVC 构建工具。
+需要仓库指定的 Rust 1.95 工具链和 Windows MSVC 构建工具。`rust-toolchain.toml` 会为本地开发和 CI 选择相同的 Rust、Clippy 和 rustfmt 版本。
 
 ```powershell
 cargo run --locked
