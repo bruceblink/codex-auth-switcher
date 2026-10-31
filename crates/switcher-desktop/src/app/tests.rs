@@ -195,7 +195,7 @@ fn controls_initialize_import_preview_and_switch_both_modes() {
         "{}",
         app.borrow().message
     );
-    assert!(app.borrow().message.contains("AUTOCODE_API_KEY"));
+    assert!(app.borrow().message.contains("已切换到 API key"));
     let active_config = fs::read_to_string(home.join("config.toml"));
     assert!(active_config.is_ok_and(|text| {
         text.contains("model = \"imported-ui-model\"")
