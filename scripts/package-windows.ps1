@@ -62,21 +62,31 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
     }
 }
 $expectedTag = "v$($package.version)"
-$sourceCode = if ($null -ne $sourceCommit) {
-    "$($package.repository)/tree/$sourceCommit"
+if ($null -ne $sourceCommit) {
+    $sourceChanges = & git -C $repositoryRoot status --porcelain=v1 --untracked-files=all
+    if ($LASTEXITCODE -ne 0) {
+        throw "Source changes could not be checked."
+    }
+    if ($sourceChanges.Count -gt 0) {
+        $sourceLabel = "Source baseline only: $($package.repository)/tree/$sourceCommit"
+        $sourceState = "modified worktree or index; the HEAD URL is a baseline, not the exact build source"
+        $lockfileSource = "Cargo.lock from the build working tree (may differ from HEAD)"
+    } else {
+        $sourceLabel = "Source code: $($package.repository)/tree/$sourceCommit"
+        $sourceState = "clean worktree and index; the build corresponds to this commit"
+        $lockfileSource = "Cargo.lock at the source commit"
+    }
 } else {
-    $package.repository
+    $sourceLabel = "Source code: $($package.repository)"
+    $sourceState = "unavailable (no Git HEAD)"
+    $lockfileSource = "Cargo.lock from the selected repository revision"
 }
-$lockfileSource = if ($null -ne $sourceCommit) {
-    "Cargo.lock at the source commit"
-} else {
-    "Cargo.lock from the selected repository revision"
-}
-$sourceLines = @("Source code: $sourceCode")
+$sourceLines = @($sourceLabel)
 if ($null -ne $sourceCommit) {
     $sourceLines += "Source commit: $sourceCommit"
 }
 $sourceLines += @(
+    "Build source state: $sourceState"
     "Expected version tag: $expectedTag (tag creation is not assumed)"
     "Build command: cargo build --release --locked"
     "Dependency lockfile: $lockfileSource"

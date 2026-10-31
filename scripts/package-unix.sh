@@ -50,11 +50,20 @@ if [[ -z "$repository" ]]; then
     exit 1
 fi
 if source_commit=$(git -C "$repository_root" rev-parse --verify HEAD 2>/dev/null) && [[ -n "$source_commit" ]]; then
-    source_url="$repository/tree/$source_commit"
-    lockfile_source="Cargo.lock at the source commit"
+    source_changes=$(git -C "$repository_root" status --porcelain=v1 --untracked-files=all)
+    if [[ -n "$source_changes" ]]; then
+        source_label="Source baseline only: $repository/tree/$source_commit"
+        source_state="modified worktree or index; the HEAD URL is a baseline, not the exact build source"
+        lockfile_source="Cargo.lock from the build working tree (may differ from HEAD)"
+    else
+        source_label="Source code: $repository/tree/$source_commit"
+        source_state="clean worktree and index; the build corresponds to this commit"
+        lockfile_source="Cargo.lock at the source commit"
+    fi
 else
     source_commit=""
-    source_url="$repository"
+    source_label="Source code: $repository"
+    source_state="unavailable (no Git HEAD)"
     lockfile_source="Cargo.lock from the selected repository revision"
 fi
 expected_tag="v${version}"
@@ -103,10 +112,11 @@ printf '%s  %s\n' "$(sha256_of "$release_binary_path")" "$(basename "$release_bi
 cp "$repository_root/LICENSE" "$license_path"
 cp "$repository_root/THIRD-PARTY-NOTICES.html" "$notices_path"
 {
-    printf 'Source code: %s\n' "$source_url"
+    printf '%s\n' "$source_label"
     if [[ -n "$source_commit" ]]; then
         printf 'Source commit: %s\n' "$source_commit"
     fi
+    printf 'Build source state: %s\n' "$source_state"
     printf 'Expected version tag: %s (tag creation is not assumed)\n' "$expected_tag"
     printf 'Build command: cargo build --release --locked\nDependency lockfile: %s\n' "$lockfile_source"
 } > "$sources_path"

@@ -61,6 +61,15 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.release_ref || github.ref }}
 
+      - name: Require a clean source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "Release packaging requires a clean source checkout." >&2
+            exit 1
+          fi
+
       - name: Read Rust toolchain from rust-toolchain.toml
         id: rust-toolchain
         shell: bash
