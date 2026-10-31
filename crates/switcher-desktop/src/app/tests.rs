@@ -185,6 +185,59 @@ async fn changing_directory_clears_unsaved_key_but_refreshing_same_directory_kee
 }
 
 #[gpui_kit::test]
+async fn changing_directory_resets_provider_and_endpoint_without_profiles(cx: &mut TestAppContext) {
+    let temporary = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let first_home = temporary.path().join("first-codex-home");
+    let second_home = temporary.path().join("second-codex-home");
+    crate::demo::create(&first_home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let (window, app) = open(cx, first_home, 1040., 740.);
+    idle(cx, window, &app).await;
+
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .api_provider
+            .read(cx)
+            .value()
+            .to_string()),
+        "OpenAI"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, cx| view.endpoint.read(cx).value().to_string()),
+        "https://gateway.example.invalid/v1"
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        let directory = app.read(cx).directory.clone();
+        directory.update(cx, |state, cx| {
+            state.set_value(second_home.to_string_lossy(), window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot set test Codex directory: {error}"));
+    click(cx, window, "refresh");
+    idle(cx, window, &app).await;
+
+    assert!(app.read_with(cx, |view, _| {
+        view.status
+            .as_ref()
+            .is_some_and(|status| status.modes.is_empty())
+    }));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .api_provider
+            .read(cx)
+            .value()
+            .to_string()),
+        "openai"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, cx| view.endpoint.read(cx).value().to_string()),
+        "https://api.openai.com/v1"
+    );
+}
+
+#[gpui_kit::test]
 async fn controls_stay_visible_and_picker_cancellation_is_safe(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
     let home = temp.path().join("codex-home");

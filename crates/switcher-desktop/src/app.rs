@@ -233,6 +233,13 @@ impl Switcher {
                     self.clear_key(window, cx);
                     self.catalog.clear_loaded(window, cx);
                     self.status = None;
+                    self.subscription_provider
+                        .update(cx, |state, cx| state.set_value("openai", window, cx));
+                    self.api_provider
+                        .update(cx, |state, cx| state.set_value("openai", window, cx));
+                    self.endpoint.update(cx, |state, cx| {
+                        state.set_value(config::DEFAULT_API_BASE_URL, window, cx)
+                    });
                 }
                 self.store = self.store.with_paths(paths);
                 self.directory_needs_refresh = false;
