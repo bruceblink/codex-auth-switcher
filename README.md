@@ -1,12 +1,14 @@
 # Codex Auth Switcher
 
-Windows 桌面 Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust 图形界面版本。
+Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust + GPUI Kit 图形界面版本，提供 Windows x64、Linux x64、macOS ARM64 和 macOS x64 可执行文件。
 
 工具恢复 `config.toml` 的模式参数和 `auth.json` 的认证。工具不依赖、不修改 `autocode.config.toml`。MCP、项目、插件、代理和其他共享设置保留当前值。
 
 ## 下载与启动
 
-从 GitHub Actions 的 `Cross-platform checks` 工作流下载对应平台的原始可执行文件和 SHA-256 文件。Windows 直接运行 `codex-auth-switcher-v<version>-windows-x64.exe`。Release 图形界面启动时不会打开终端窗口。使用步骤见 [V2 用户指南](docs/06-v2-user-guide.md)。
+从 [GitHub Releases](https://github.com/bruceblink/codex-auth-switcher/releases) 下载对应平台的原始可执行文件和 SHA-256 文件，并保留同一版本的 `LICENSE`、`THIRD-PARTY-NOTICES.html` 和 `SOURCES.txt`。Windows 直接运行 `codex-auth-switcher-v<version>-windows-x64.exe`，不会打开终端窗口。Linux 和 macOS 下载后需赋予可执行权限。使用步骤见[用户指南](docs/06-v2-user-guide.md)。
+
+Windows 已完成真实窗口验证。Linux 和 macOS 产物经过原生构建、自动测试、文件格式和架构校验，尚未完成真实桌面的交互验收。程序未签名，不包含安装程序和自动更新。自动重启 Codex 和用户环境变量持久化目前只支持 Windows；其他平台请手动重启，认证仍保存到所选目录的 `auth.json`。
 
 ## 本机构建
 
