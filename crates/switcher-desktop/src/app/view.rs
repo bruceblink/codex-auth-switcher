@@ -29,6 +29,7 @@ impl Render for Switcher {
                 .as_ref()
                 .is_some_and(|status| status.initialized && !status.recovery_pending);
         let can_apply = !self.busy
+            && !self.catalog.dirty
             && self
                 .prepared
                 .as_ref()
@@ -281,7 +282,10 @@ impl Switcher {
                 view.child(hint("配置目录已修改，请先刷新状态后再预览切换。", false))
             })
             .when(self.catalog.dirty, |view| {
-                view.child(hint("模型目录有未保存改动；保存或放弃改动后才能切换配置目录。", false))
+                view.child(hint(
+                    "模型目录有未保存改动。请先保存或放弃，再应用模式切换或切换配置目录。",
+                    true,
+                ))
             })
             .child(
                 div()

@@ -404,6 +404,12 @@ impl Switcher {
     }
 
     pub(crate) fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.catalog.dirty {
+            self.message = "模型目录有未保存改动。请先保存或放弃，再应用模式切换。".into();
+            self.error = true;
+            cx.notify();
+            return;
+        }
         let Some(prepared) = self.prepared.take() else {
             return;
         };
@@ -415,6 +421,9 @@ impl Switcher {
                 this.clear_key(window, cx);
                 match result {
                     Ok((result, status)) => {
+                        if result.changed {
+                            this.catalog.clear_loaded(window, cx);
+                        }
                         this.restart_needed |= result.restart_required;
                         this.message = if result.changed {
                             format!(

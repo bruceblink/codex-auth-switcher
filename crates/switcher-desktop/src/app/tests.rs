@@ -6,7 +6,7 @@ use gpui_kit::{
 };
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -79,6 +79,27 @@ fn click(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) {
         window.click(id, cx);
     })
     .unwrap_or_else(|error| panic!("cannot click {id}: {error}"));
+}
+
+fn write_model_catalog(path: &Path, slug: &str) {
+    fs::write(
+        path,
+        format!(
+            r#"{{"models":[{{"slug":"{slug}","display_name":"{slug}","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{{"effort":"high","description":"Synthetic high"}},{{"effort":"xhigh","description":"Synthetic xhigh"}},{{"effort":"max","description":"Synthetic max"}}],"priority":1}}]}}"#
+        ),
+    )
+    .unwrap_or_else(|error| panic!("cannot write test model catalog: {error}"));
+}
+
+fn configure_catalog_path(config_path: &Path, catalog_path: &Path) {
+    let config = fs::read_to_string(config_path)
+        .unwrap_or_else(|error| panic!("cannot read test configuration: {error}"));
+    let catalog_path = catalog_path.to_string_lossy().replace('\\', "/");
+    fs::write(
+        config_path,
+        format!("model_catalog_json = \"{catalog_path}\"\n{config}"),
+    )
+    .unwrap_or_else(|error| panic!("cannot configure test model catalog: {error}"));
 }
 
 #[gpui_kit::test]
@@ -506,4 +527,144 @@ async fn selecting_model_catalog_loads_it_and_preserves_current_data_on_cancel_o
             .to_string()),
         "Selected Model-edit"
     );
+}
+
+#[gpui_kit::test]
+async fn unsaved_model_edits_block_mode_apply_and_remain_intact(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("subscription-models.json");
+    write_model_catalog(&catalog_path, "subscription-model");
+    configure_catalog_path(&home.join("config.toml"), &catalog_path);
+
+    let (window, app) = open(cx, home.clone(), 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+    cx.update_window(window, |_, window, cx| {
+        window.click("model-name", cx);
+        window.press("end", cx);
+        window.input("-unsaved", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot edit test model: {error}"));
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+
+    click(cx, window, "switch-tab");
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| view.prepared.is_some()));
+
+    let config_before = fs::read(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot read test config: {error}"));
+    let vault_before = fs::read(home.join("auth-switcher-v2/modes.enc"))
+        .unwrap_or_else(|error| panic!("cannot read test mode archive: {error}"));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("apply").disabled(), Some(true));
+        window.click("apply", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect blocked apply button: {error}"));
+
+    assert_eq!(
+        app.read_with(cx, |view, _| view
+            .status
+            .as_ref()
+            .and_then(|status| status.mode)),
+        Some(Mode::Subscription)
+    );
+    assert!(app.read_with(cx, |view, _| view.prepared.is_some()));
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .display_name
+            .read(cx)
+            .value()
+            .to_string()),
+        "subscription-model-unsaved"
+    );
+    assert_eq!(
+        fs::read(home.join("config.toml"))
+            .unwrap_or_else(|error| panic!("cannot read config after blocked apply: {error}")),
+        config_before
+    );
+    assert_eq!(
+        fs::read(home.join("auth-switcher-v2/modes.enc")).unwrap_or_else(|error| panic!(
+            "cannot read mode archive after blocked apply: {error}"
+        )),
+        vault_before
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        app.update(cx, |this, cx| this.apply(window, cx));
+    })
+    .unwrap_or_else(|error| panic!("cannot check direct apply guard: {error}"));
+    assert!(app.read_with(cx, |view, _| view.message.contains("未保存改动")));
+    assert!(app.read_with(cx, |view, _| view.prepared.is_some()));
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+}
+
+#[gpui_kit::test]
+async fn successful_mode_switch_clears_the_previous_model_catalog(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let subscription_catalog = home.join("subscription-models.json");
+    let api_catalog = home.join("api-models.json");
+    write_model_catalog(&subscription_catalog, "subscription-model");
+    write_model_catalog(&api_catalog, "demo-api-model");
+    configure_catalog_path(&home.join("config.toml"), &subscription_catalog);
+    configure_catalog_path(&home.join("config.toml.bak-demo-api"), &api_catalog);
+
+    let (window, app) = open(cx, home.clone(), 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| {
+        view.catalog
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| catalog.path.ends_with("subscription-models.json"))
+    }));
+
+    click(cx, window, "switch-tab");
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+    click(cx, window, "apply");
+    idle(cx, window, &app).await;
+    assert_eq!(
+        app.read_with(cx, |view, _| view
+            .status
+            .as_ref()
+            .and_then(|status| status.mode)),
+        Some(Mode::Api)
+    );
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 0);
+    assert!(app.read_with(cx, |view, _| view.catalog.catalog.is_none()));
+
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| {
+        view.catalog
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| catalog.path.ends_with("api-models.json"))
+    }));
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 1);
+    assert!(app.read_with(cx, |view, cx| {
+        view.catalog
+            .display_name
+            .read(cx)
+            .value()
+            .contains("demo-api-model")
+    }));
 }
