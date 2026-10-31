@@ -181,7 +181,17 @@ function Click-NativeButton([string]$Name, [bool]$ForceMouse = $false) {
 }
 
 function Select-Target([string]$Name) {
-    $null = Wait-ForButton $Name
+    $button = Wait-ForButton $Name
+    try {
+        $toggle = $button.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+        if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
+            $toggle.Toggle()
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    catch {
+        # Some egui builds do not expose TogglePattern. The pointer path below remains the fallback.
+    }
     # egui toggle buttons expose InvokePattern inconsistently on Windows. Use the
     # native pointer path so the real target handler receives the click.
     Click-NativeButton $Name $true
