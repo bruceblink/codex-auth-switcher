@@ -230,6 +230,7 @@ impl Switcher {
                     return false;
                 }
                 if paths.home != self.store.paths.home {
+                    self.clear_key(window, cx);
                     self.catalog.clear_loaded(window, cx);
                     self.status = None;
                 }
@@ -503,7 +504,6 @@ impl Switcher {
             let _ = this.update_in(cx, move |this, window, cx| {
                 this.busy = false;
                 if let Some(path) = selected {
-                    this.clear_key(window, cx);
                     this.directory.update(cx, |state, cx| {
                         state.set_value(path.to_string_lossy(), window, cx)
                     });

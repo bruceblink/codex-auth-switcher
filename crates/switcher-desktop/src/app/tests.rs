@@ -134,6 +134,57 @@ async fn first_run_creates_defaults_without_fake_authentication(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
+async fn changing_directory_clears_unsaved_key_but_refreshing_same_directory_keeps_it(
+    cx: &mut TestAppContext,
+) {
+    let temporary = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let first_home = temporary.path().join("first-codex-home");
+    let second_home = temporary.path().join("second-codex-home");
+    let (window, app) = open(cx, first_home, 1040., 740.);
+    idle(cx, window, &app).await;
+
+    let initial_key = "synthetic-key-for-first-directory";
+    cx.update_window(window, |_, window, cx| {
+        let key = app.read(cx).key.clone();
+        key.update(cx, |state, cx| {
+            state.set_value(initial_key, window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot set test API key: {error}"));
+    let original_key_entity = app.read_with(cx, |view, _| view.key.entity_id());
+
+    click(cx, window, "refresh");
+    idle(cx, window, &app).await;
+    assert_eq!(
+        app.read_with(cx, |view, cx| view.key.read(cx).value().to_string()),
+        initial_key,
+        "refreshing the same directory must retain the unsaved key"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, _| view.key.entity_id()),
+        original_key_entity,
+        "refreshing the same directory must retain the input history"
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        let directory = app.read(cx).directory.clone();
+        directory.update(cx, |state, cx| {
+            state.set_value(second_home.to_string_lossy(), window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot set test Codex directory: {error}"));
+    click(cx, window, "refresh");
+    idle(cx, window, &app).await;
+
+    assert!(app.read_with(cx, |view, cx| view.key.read(cx).value().is_empty()));
+    assert_ne!(
+        app.read_with(cx, |view, _| view.key.entity_id()),
+        original_key_entity,
+        "changing directories must replace the key input and revoke its edit history"
+    );
+}
+
+#[gpui_kit::test]
 async fn controls_stay_visible_and_picker_cancellation_is_safe(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
     let home = temp.path().join("codex-home");
