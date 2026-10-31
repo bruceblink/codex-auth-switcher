@@ -2,7 +2,10 @@ use eframe::egui::{self, Color32, RichText, TextEdit};
 
 use super::{
     ImportSources, Mode, PreparedSwitch, ReasoningLevel, SwitcherApp,
-    format::{auth_source_name, config_field_name, masked_hint, mode_name, setting_value},
+    format::{
+        auth_source_name, config_field_name, config_source_name, masked_hint, mode_name,
+        setting_value,
+    },
 };
 
 impl SwitcherApp {
@@ -26,10 +29,20 @@ impl SwitcherApp {
         let directory_needs_refresh = self.directory_needs_refresh;
         let enabled = !self.busy;
 
+        // Reserve the action area before laying out scrollable content. A long
+        // preview must never move the apply button or its result off-screen.
+        egui::Panel::bottom("switch-actions")
+            .frame(
+                egui::Frame::new()
+                    .inner_margin(10.0)
+                    .fill(ui.visuals().panel_fill),
+            )
+            .show(ui, |ui| self.switch_actions(ui));
+
         ui.horizontal_wrapped(|ui| {
             ui.heading("Codex Auth Switcher");
             ui.label("认证与模型配置");
-            ui.label("v0.2.0");
+            ui.weak(concat!("v", env!("CARGO_PKG_VERSION")));
             let (status_text, status_color) = if self.busy {
                 ("处理中", Color32::from_rgb(44, 113, 160))
             } else if recovery_pending {
@@ -51,6 +64,7 @@ impl SwitcherApp {
         ui.separator();
         egui::ScrollArea::vertical()
             .id_salt("workspace-scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.label("配置目录");
                 ui.horizontal(|ui| {
@@ -153,19 +167,14 @@ impl SwitcherApp {
                                 ui.weak("服务层级");
                                 ui.label(setting_value(&status.service_tier));
                             });
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(format!("配置文件：{}", status.config_path))
-                                        .weak(),
-                                )
-                                .wrap(),
-                            );
-                        });
+                        })
+                        .response
+                        .on_hover_text(format!("配置文件：{}", status.config_path));
                 }
 
                 ui.add_space(14.0);
                 ui.separator();
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.strong("目标模式");
                     if ui
                         .add_enabled(
@@ -279,6 +288,7 @@ impl SwitcherApp {
                     ui.strong("变更预览");
                     egui::Grid::new("preview-grid")
                         .num_columns(3)
+                        .max_col_width((ui.available_width() - 32.0) / 3.0)
                         .striped(true)
                         .show(ui, |ui| {
                             ui.strong("字段");
@@ -286,9 +296,9 @@ impl SwitcherApp {
                             ui.strong("目标");
                             ui.end_row();
                             for change in &prepared.preview.changes {
-                                ui.label(config_field_name(&change.field));
-                                ui.label(setting_value(&change.before));
-                                ui.label(setting_value(&change.after));
+                                ui.add(egui::Label::new(config_field_name(&change.field)).wrap());
+                                ui.add(egui::Label::new(setting_value(&change.before)).wrap());
+                                ui.add(egui::Label::new(setting_value(&change.after)).wrap());
                                 ui.end_row();
                             }
                         });
@@ -306,42 +316,52 @@ impl SwitcherApp {
                     }
                 }
 
-                ui.add_space(8.0);
-                ui.separator();
-                ui.small("应用前关闭 Codex。应用后重启，并新建会话。");
-                // Keep actions in the scroll region so taller cards cannot clip them below the window.
-                ui.horizontal_wrapped(|ui| {
-                    let color = if self.error {
-                        Color32::from_rgb(173, 59, 50)
-                    } else {
-                        ui.visuals().text_color()
-                    };
-                    ui.label(RichText::new(&self.message).color(color));
-                    if ui
-                        .add_enabled(
-                            enabled
-                                && initialized
-                                && !recovery_pending
-                                && !self.directory_needs_refresh,
-                            egui::Button::new("预览变更"),
-                        )
-                        .clicked()
-                    {
-                        self.preview();
-                    }
-                    if ui
-                        .add_enabled(
-                            enabled && self.prepared.is_some(),
-                            egui::Button::new("应用切换"),
-                        )
-                        .clicked()
-                    {
-                        self.apply();
-                    }
-                });
             });
 
         self.model_catalog_editor(ui.ctx(), enabled);
+    }
+
+    fn switch_actions(&mut self, ui: &mut egui::Ui) {
+        let can_preview = !self.busy
+            && !self.directory_needs_refresh
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|status| status.initialized && !status.recovery_pending);
+        let can_apply = !self.busy
+            && self
+                .prepared
+                .as_ref()
+                .is_some_and(|prepared| prepared.preview.changed);
+        ui.horizontal(|ui| {
+            ui.strong(format!("目标：{}", mode_name(self.target)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(can_apply, egui::Button::new("应用切换"))
+                    .clicked()
+                {
+                    self.apply();
+                }
+                if ui
+                    .add_enabled(can_preview, egui::Button::new("预览变更"))
+                    .clicked()
+                {
+                    self.preview();
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            if self.busy {
+                ui.spinner();
+            }
+            let color = if self.error {
+                Color32::from_rgb(173, 59, 50)
+            } else {
+                ui.visuals().text_color()
+            };
+            ui.add(egui::Label::new(RichText::new(&self.message).color(color)).wrap());
+        });
+        ui.small("应用前关闭 Codex。应用后重启，并新建会话。");
     }
 
     fn mode_card(&self, ui: &mut egui::Ui, mode: Mode) {
@@ -377,22 +397,30 @@ impl SwitcherApp {
                     mode_card_field(ui, "Provider", setting_value(&saved.provider));
                     mode_card_field(ui, "模型", setting_value(&saved.model));
                     mode_card_field(ui, "推理级别", setting_value(&saved.effort));
-                    mode_card_field(ui, "上下文窗口", setting_value(&saved.context_window));
-                    mode_card_field(ui, "模型详细度", setting_value(&saved.verbosity));
-                    mode_card_field(ui, "服务层级", setting_value(&saved.service_tier));
                     if !saved.base_url.is_empty() {
                         mode_card_field(ui, "Base URL", &saved.base_url);
                     }
-                    mode_card_field(ui, "配置来源", &saved.config_source);
-                    mode_card_field(
-                        ui,
-                        "认证来源",
-                        if saved.auth_source.is_empty() {
-                            "缺失"
-                        } else {
-                            &saved.auth_source
-                        },
-                    );
+                    ui.push_id(mode_name(mode), |ui| {
+                        ui.collapsing("参数与来源", |ui| {
+                            mode_card_field(ui, "上下文窗口", setting_value(&saved.context_window));
+                            mode_card_field(ui, "模型详细度", setting_value(&saved.verbosity));
+                            mode_card_field(ui, "服务层级", setting_value(&saved.service_tier));
+                            mode_card_field(
+                                ui,
+                                "配置来源",
+                                config_source_name(&saved.config_source),
+                            );
+                            mode_card_field(
+                                ui,
+                                "认证来源",
+                                if saved.auth_source.is_empty() {
+                                    "缺失"
+                                } else {
+                                    auth_source_name(&saved.auth_source)
+                                },
+                            );
+                        });
+                    });
                     if !saved.issue.is_empty() {
                         ui.add_space(4.0);
                         ui.add(

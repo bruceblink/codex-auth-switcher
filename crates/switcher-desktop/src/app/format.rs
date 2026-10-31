@@ -21,6 +21,13 @@ pub(super) fn auth_source_name(source: &str) -> &str {
     }
 }
 
+pub(super) fn config_source_name(source: &str) -> &str {
+    match source {
+        "latest active config" => "当前活动配置",
+        source => source,
+    }
+}
+
 pub(super) fn config_field_name(field: &str) -> &str {
     match field {
         "model_provider" => "Provider",
@@ -52,6 +59,8 @@ pub(super) fn setting_value(value: &str) -> &str {
     match value {
         "(default)" => "默认",
         "(configured)" => "已配置",
+        "configured" => "已配置",
+        "not set" => "未设置",
         value => value,
     }
 }

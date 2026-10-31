@@ -1,6 +1,9 @@
 use super::*;
 use egui::accesskit::Role;
-use egui_kittest::{Harness, kittest::Queryable as _};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT as _, Queryable as _},
+};
 use std::{cell::RefCell, fs, rc::Rc, thread};
 
 #[test]
@@ -36,6 +39,16 @@ fn authentication_source_labels_are_safe_and_localized() {
         super::format::auth_source_name("custom-api-auth.json"),
         "custom-api-auth.json"
     );
+    assert_eq!(
+        super::format::config_source_name("latest active config"),
+        "当前活动配置"
+    );
+    assert_eq!(
+        super::format::auth_source_name("latest active authentication"),
+        "当前活动认证"
+    );
+    assert_eq!(super::format::setting_value("configured"), "已配置");
+    assert_eq!(super::format::setting_value("not set"), "未设置");
 }
 
 /// Builds the same immediate-mode controls as the native window with synthetic files.
@@ -64,8 +77,9 @@ fn harness_for(
 /// Lets worker-thread file operations finish before the next UI action is asserted.
 fn wait_until_idle(harness: &mut Harness<'static>, app: &Rc<RefCell<SwitcherApp>>) {
     for _ in 0..200 {
-        harness.run();
+        harness.run_steps(2);
         if !app.borrow().busy {
+            harness.run();
             return;
         }
         thread::sleep(Duration::from_millis(5));
@@ -79,7 +93,7 @@ fn click_button(harness: &mut Harness, label: &str) {
     harness.run();
     let button = harness.get_by_role_and_label(Role::Button, label);
     button.click();
-    harness.run();
+    harness.run_steps(2);
 }
 
 #[test]
@@ -192,6 +206,21 @@ fn controls_initialize_import_preview_and_switch_both_modes() {
     assert!(active_auth.is_ok_and(|text| text.contains("synthetic-input-ui-key")));
     assert!(app.borrow().key.is_empty());
 
+    click_button(&mut harness, "预览变更");
+    wait_until_idle(&mut harness, &app);
+    assert!(
+        app.borrow()
+            .prepared
+            .as_ref()
+            .is_some_and(|prepared| !prepared.preview.changed)
+    );
+    assert!(
+        harness
+            .get_by_role_and_label(Role::Button, "应用切换")
+            .accesskit_node()
+            .is_disabled()
+    );
+
     click_button(&mut harness, "订阅");
     click_button(&mut harness, "预览变更");
     wait_until_idle(&mut harness, &app);
@@ -205,6 +234,76 @@ fn controls_initialize_import_preview_and_switch_both_modes() {
     assert!(active_config.is_ok_and(|text| text.contains("model = \"demo-subscription-model\"")));
     let active_auth = fs::read_to_string(home.join("auth.json"));
     assert!(active_auth.is_ok_and(|text| text.contains("synthetic-access")));
+}
+
+#[test]
+fn switch_actions_stay_visible_with_long_previews_at_supported_window_sizes() -> anyhow::Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home)?;
+    let config_path = home.join("config.toml");
+    let config = fs::read_to_string(&config_path)?;
+    fs::write(
+        &config_path,
+        format!(
+            "plan_mode_reasoning_effort = \"high\"\nmodel_reasoning_summary = \"detailed\"\nmodel_supports_reasoning_summaries = true\nmodel_context_window = 375000\nmodel_auto_compact_token_limit = 320000\ndisable_response_storage = true\nservice_tier = \"priority\"\npersonality = \"pragmatic\"\n{config}"
+        ),
+    )?;
+    let (mut harness, app) = harness_for(
+        home,
+        FileDialogs {
+            pick_file: Arc::new(|_| None),
+            pick_folder: Arc::new(|| None),
+        },
+    );
+    wait_until_idle(&mut harness, &app);
+    click_button(&mut harness, "初始化模式");
+    wait_until_idle(&mut harness, &app);
+    click_button(&mut harness, "预览变更");
+    wait_until_idle(&mut harness, &app);
+    assert!(
+        app.borrow()
+            .prepared
+            .as_ref()
+            .is_some_and(|prepared| prepared.preview.changes.len() >= 10)
+    );
+
+    for size in [egui::vec2(920.0, 640.0), egui::vec2(720.0, 560.0)] {
+        harness.set_size(size);
+        harness.run();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        for label in ["预览变更", "应用切换"] {
+            let button = harness.get_by_role_and_label(Role::Button, label);
+            assert!(
+                viewport.contains_rect(button.rect()),
+                "{label} is clipped at {size:?}: {:?}",
+                button.rect()
+            );
+        }
+        // Scroll the large preview away, then assert that the footer does not move with it.
+        let footer_before = harness
+            .get_by_role_and_label(Role::Button, "应用切换")
+            .rect();
+        harness.get_by_label("认证：替换为目标认证").scroll_to_me();
+        harness.run();
+        assert_eq!(
+            footer_before,
+            harness
+                .get_by_role_and_label(Role::Button, "应用切换")
+                .rect()
+        );
+    }
+    // Apply from the footer without scrolling it into view.
+    harness
+        .get_by_role_and_label(Role::Button, "应用切换")
+        .click();
+    wait_until_idle(&mut harness, &app);
+    assert_eq!(
+        app.borrow().status.as_ref().and_then(|status| status.mode),
+        Some(Mode::Api)
+    );
+    Ok(())
 }
 
 #[test]
