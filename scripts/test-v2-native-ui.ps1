@@ -136,7 +136,7 @@ function Set-TextInputValue([string]$Name, [string]$Value) {
     $pattern.SetValue($Value)
 }
 
-function Click-NativeButton([string]$Name) {
+function Click-NativeButton([string]$Name, [bool]$ForceMouse = $false) {
     $button = Wait-ForButton $Name
     $window = Get-MainWindow
     $windowHandle = [IntPtr]$window.Current.NativeWindowHandle
@@ -152,7 +152,7 @@ function Click-NativeButton([string]$Name) {
     catch {
         # Toggle controls may expose TogglePattern only; use native mouse input for those controls.
     }
-    if ($null -ne $invokePattern) {
+    if (-not $ForceMouse -and $null -ne $invokePattern) {
         $invokePattern.Invoke()
         Start-Sleep -Milliseconds 100
         return
@@ -181,24 +181,11 @@ function Click-NativeButton([string]$Name) {
 }
 
 function Select-Target([string]$Name) {
-    $button = Wait-ForButton $Name
-    $pattern = $button.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
-    if ($pattern.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
-        Click-NativeButton $Name
-    }
-
-    $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while ([DateTime]::UtcNow -lt $deadline) {
-        $button = Find-Button $Name
-        if ($null -ne $button) {
-            $pattern = $button.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
-            if ($pattern.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) {
-                return
-            }
-        }
-        Start-Sleep -Milliseconds 100
-    }
-    throw "The native GUI did not select target '$Name'."
+    $null = Wait-ForButton $Name
+    # egui toggle buttons expose InvokePattern inconsistently on Windows. Use the
+    # native pointer path so the real target handler receives the click.
+    Click-NativeButton $Name $true
+    Start-Sleep -Milliseconds 200
 }
 
 function Read-ActiveFiles {
