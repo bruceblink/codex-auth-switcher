@@ -5,12 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $manifestPath = Join-Path $repositoryRoot "Cargo.toml"
-$guidePath = Join-Path $repositoryRoot "docs\06-v2-user-guide.md"
 $binaryPath = Join-Path $repositoryRoot "target\release\codex-auth-switcher.exe"
-
-if (-not (Test-Path -LiteralPath $guidePath -PathType Leaf)) {
-    throw "The V2 user guide was not found."
-}
 
 $compiler = & rustc -vV
 if ($LASTEXITCODE -ne 0) {
@@ -52,37 +47,22 @@ $architecture = if ($target.StartsWith("x86_64-")) { "x64" } else { "arm64" }
 
 $outputPath = [System.IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
-$archiveName = "codex-auth-switcher-v$($package.version)-windows-$architecture.zip"
-$archivePath = Join-Path $outputPath $archiveName
-$checksumPath = "$archivePath.sha256"
 $binaryName = "codex-auth-switcher-v$($package.version)-windows-$architecture.exe"
 $releaseBinaryPath = Join-Path $outputPath $binaryName
 $binaryChecksumPath = "$releaseBinaryPath.sha256"
-if ((Test-Path -LiteralPath $archivePath) -or
-    (Test-Path -LiteralPath $checksumPath) -or
-    (Test-Path -LiteralPath $releaseBinaryPath) -or
+if ((Test-Path -LiteralPath $releaseBinaryPath) -or
     (Test-Path -LiteralPath $binaryChecksumPath)) {
-    throw "The package output already exists. Choose another output directory or move the previous package."
+    throw "The release output already exists. Choose another output directory or move the previous output."
 }
 
-$stagePath = Join-Path $outputPath ".staging-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $stagePath | Out-Null
 try {
-    Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $stagePath "codex-auth-switcher.exe")
-    Copy-Item -LiteralPath $guidePath -Destination (Join-Path $stagePath "README.md")
     Copy-Item -LiteralPath $binaryPath -Destination $releaseBinaryPath
-    Compress-Archive -Path (Join-Path $stagePath "*") -DestinationPath $archivePath -CompressionLevel Optimal
 
-    $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $checksum = "$hash  $archiveName"
-    [System.IO.File]::WriteAllText($checksumPath, $checksum, [System.Text.UTF8Encoding]::new($false))
     $binaryHash = (Get-FileHash -LiteralPath $releaseBinaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $binaryChecksum = "$binaryHash  $binaryName"
     [System.IO.File]::WriteAllText($binaryChecksumPath, $binaryChecksum, [System.Text.UTF8Encoding]::new($false))
 
     [pscustomobject]@{
-        Archive = $archivePath
-        Sha256 = $hash
         Binary = $releaseBinaryPath
         BinarySha256 = $binaryHash
         Target = $target
@@ -90,12 +70,6 @@ try {
     }
 }
 catch {
-    if (Test-Path -LiteralPath $archivePath) {
-        Remove-Item -LiteralPath $archivePath
-    }
-    if (Test-Path -LiteralPath $checksumPath) {
-        Remove-Item -LiteralPath $checksumPath
-    }
     if (Test-Path -LiteralPath $releaseBinaryPath) {
         Remove-Item -LiteralPath $releaseBinaryPath
     }
@@ -103,12 +77,4 @@ catch {
         Remove-Item -LiteralPath $binaryChecksumPath
     }
     throw
-}
-finally {
-    $stageFullPath = [System.IO.Path]::GetFullPath($stagePath)
-    $outputPrefix = $outputPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-    if (-not $stageFullPath.StartsWith($outputPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "The staging directory escaped the package output directory."
-    }
-    Remove-Item -LiteralPath $stageFullPath -Recurse -Force
 }

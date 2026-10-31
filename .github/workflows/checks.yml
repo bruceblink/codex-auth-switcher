@@ -7,34 +7,79 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: codex-auth-switcher-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  rust:
-    name: Rust checks (${{ matrix.os }})
+  quality:
+    name: Quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            artifact: codex-auth-switcher-windows-x64
-          - os: ubuntu-latest
-            artifact: codex-auth-switcher-linux
-          - os: macos-latest
-            artifact: codex-auth-switcher-macos
+        os:
+          - windows-2025
+          - ubuntu-24.04
+          - macos-15
+          - macos-15-intel
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
+      - name: Initialize and verify Windows MSVC/CMake environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\enable-windows-msvc.ps1
+
+      - name: Report toolchain and architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -Vv
+          uname -m
+
+      - name: Restore Cargo download cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
       - name: Install Linux desktop build dependencies
         if: runner.os == 'Linux'
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes \
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            clang \
+            cmake \
+            libasound2-dev \
             libdbus-1-dev \
             libegl1-mesa-dev \
             libfontconfig1-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libssl-dev \
+            libvulkan1 \
             libwayland-dev \
+            libwebkit2gtk-4.1-dev \
             libx11-dev \
             libx11-xcb-dev \
             libxcb-render0-dev \
@@ -46,26 +91,156 @@ jobs:
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
             libxrandr-dev \
+            libzstd-dev \
+            ninja-build \
             pkg-config
+
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Check all workspace targets
+        run: cargo check --workspace --all-targets --locked
+
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Run Rust tests
+
+      - name: Run workspace tests
         run: cargo test --workspace --locked
+
+  package:
+    name: Package (${{ matrix.os }})
+    needs: quality
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            binary_glob: dist/codex-auth-switcher-*-windows-*.exe
+          - os: ubuntu-24.04
+            binary_glob: dist/codex-auth-switcher-*-linux-x64
+          - os: macos-15
+            binary_glob: dist/codex-auth-switcher-*-macos-arm64
+          - os: macos-15-intel
+            binary_glob: dist/codex-auth-switcher-*-macos-x64
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Initialize and verify Windows MSVC/CMake environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\enable-windows-msvc.ps1
+
+      - name: Report toolchain and architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -Vv
+          uname -m
+
+      - name: Restore Cargo download cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            clang \
+            cmake \
+            libasound2-dev \
+            libdbus-1-dev \
+            libegl1-mesa-dev \
+            libfontconfig1-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libssl-dev \
+            libvulkan1 \
+            libwayland-dev \
+            libwebkit2gtk-4.1-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxrandr-dev \
+            libzstd-dev \
+            ninja-build \
+            pkg-config
+
       - name: Build and package Windows release
         if: runner.os == 'Windows'
+        shell: pwsh
         run: .\scripts\package-windows.ps1
+
       - name: Build and package Unix release
         if: runner.os != 'Windows'
         shell: bash
         run: ./scripts/package-unix.sh
+
       - name: Test packaged native Windows UI
         if: runner.os == 'Windows'
+        shell: pwsh
         run: .\scripts\test-v2-native-ui.ps1 -ExecutablePath .\target\release\codex-auth-switcher.exe
-      - name: Upload platform release
+
+      - name: Verify Windows executable checksum
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = Get-ChildItem -Path '${{ matrix.binary_glob }}' | Select-Object -First 1
+          $checksum = Get-ChildItem -Path '${{ matrix.binary_glob }}.sha256' | Select-Object -First 1
+          $expected = (Get-Content -Raw -LiteralPath $checksum.FullName).Trim().Split()[0]
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $binary.FullName).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Windows executable checksum mismatch." }
+
+      - name: Verify Unix executable checksum
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          binary=$(compgen -G '${{ matrix.binary_glob }}' | head -n 1)
+          checksum=$(compgen -G '${{ matrix.binary_glob }}.sha256' | head -n 1)
+          test -x "$binary"
+          file "$binary"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            lipo -verify_arch "$(uname -m)" "$binary"
+          else
+            readelf -h "$binary" | grep -q 'Advanced Micro Devices X86-64'
+          fi
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum -c "$(basename "$checksum")"; else shasum -a 256 -c "$(basename "$checksum")"; fi
+
+      - name: Upload raw executable
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/*
+          path: ${{ matrix.binary_glob }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload executable checksum
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ matrix.binary_glob }}.sha256
+          archive: false
           if-no-files-found: error

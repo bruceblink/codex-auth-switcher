@@ -1,12 +1,12 @@
-# Rust + egui 第二版开发计划
+# Rust 桌面第二版历史开发计划
 
 更新日期：2026-10-31。
 
 ## 1. 目标与当前基线
 
-项目维护一个 Rust 图形界面版本。桌面层使用 egui/eframe 0.37.0 和 Wgpu，业务核心由独立的 `switcher-core` crate 提供。Windows x64 是当前原生验收目标；CI 同时为 Windows、Linux 和 macOS runner 生成对应架构的 Release 可执行文件。
+本文件记录已完成的 egui 版本历史。当前桌面层已迁移到 GPUI Kit 0.8.1，现行范围见[GPUI Kit 桌面迁移计划](09-gpui-kit-migration-plan.md)。业务核心由独立的 `switcher-core` crate 提供。
 
-当前基线已经覆盖模式存档、配置预览、认证切换、失败恢复、模型目录编辑和 Windows 原生窗口验收。CLI、Python 第一版、GPUI 运行依赖及其专用入口已从当前 workspace 移除；相关记录保留在历史文档中。
+本历史基线覆盖模式存档、配置预览、认证切换、失败恢复、模型目录编辑和 Windows 原生窗口验收。CLI 和 Python 第一版已从当前 workspace 移除。
 
 ## 2. 里程碑状态
 
@@ -70,7 +70,7 @@ cargo test --workspace --locked
 .\scripts\test-v2-native-ui.ps1
 ```
 
-Linux/macOS 打包命令为 `./scripts/package-unix.sh`。CI 产物包含版本化可执行文件、带用户指南的 `tar.gz` 归档和对应 SHA-256 文件；Windows 产物还包含便携 ZIP。
+Linux/macOS 打包命令为 `./scripts/package-unix.sh`。CI 产物只包含版本化原始可执行文件和对应 SHA-256 文件，不生成 ZIP 或 `tar.gz` 归档。
 
 ### 4.3 Windows 原生验收
 
@@ -138,4 +138,4 @@ Linux/macOS 打包命令为 `./scripts/package-unix.sh`。CI 产物包含版本�
 
 模式存档位于 `CODEX_HOME/auth-switcher-v2`，`modes.enc` 和 `pending.enc` 使用 AES-256-GCM，`vault.key` 与密文分开保存。Windows 状态目录仅允许当前用户和 SYSTEM 访问。回滚依赖加密恢复记录和应用前的文件快照；发现外部修改时停止覆盖并保留恢复记录。
 
-egui 是当前唯一维护的桌面实现。若未来更换框架，应作为单独迁移项目处理，不在当前 workspace 中并行保留第二套实现。
+egui 实现已停止维护。当前只维护 GPUI Kit 桌面实现，不在 workspace 中并行保留第二套 GUI。
