@@ -53,7 +53,7 @@ Wgpu EXE 比 GPUI 基线小 6,493,696 字节，便携 ZIP 小 1,891,912 字节�
 - 当前界面分为应用状态与后台操作、控件布局、错误文字和交互测试四个模块。模式、输入、预览和文件对话框都使用 Rust 类型。
 - AccessKit 语义保留。`egui_kittest` 可按按钮角色和名称驱动界面，候选版有 4 个 UI 测试。
 - 当前桌面程序启用 Wgpu 渲染。它比 Glow 增加 10 个 Windows x64 普通依赖和约 1.97 MB ZIP 体积；本机 Release 窗口可见性正常。系统字体、默认字体、剪贴板、链接、Wayland 和 X11 特性保持开启。
-- eframe 0.37.0 的声明 MSRV 是 Rust 1.95。本仓库的 MSRV 因此从 1.91 提高到 1.95。当前 CI 使用 stable，但需要确保未来依赖升级仍满足该要求。
+- eframe 0.37.0 的声明 MSRV 是 Rust 1.95。本仓库当前使用 Rust stable 1.99.1；`rust-toolchain.toml` 和 CI 都跟随 stable，依赖升级仍需重新运行完整验证。
 - eframe/egui 版本固定为 0.37.0。直接升级时需要重新运行 Rust 检查、Headless 测试、Windows 打包和真实窗口检查。
 - egui 控件更基础。若要达到 gpui-kit 现有视觉风格，需要本项目持续维护颜色、留白、层级和交互状态。
 

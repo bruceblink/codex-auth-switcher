@@ -11,7 +11,7 @@ GPUI Kit 的组件样式和视觉完成度优于当前 egui 界面。这是已�
 ## 运行与数据边界
 
 - 图形界面由 eframe 创建 Windows 原生窗口。文件操作和加密操作在后台线程运行。
-- 桌面 renderer 固定为 Wgpu。egui 版本锁定在 0.37.0，工作区最低 Rust 版本为 1.95。
+- 桌面 renderer 固定为 Wgpu。egui 版本锁定在 0.37.0，工作区使用 Rust stable 1.99.1 进行构建和验证。
 - `switcher-core` 不依赖图形框架。它负责配置解析、模式状态、加密、文件锁、预览过期检查和失败恢复。
 - 模式密文、密钥和 Codex 的活动配置分开保存。工具不会联网验证 key，不会读取或修改 `autocode.config.toml`。
 - Windows 状态目录限制为当前用户和 SYSTEM。缺失密钥、密文校验失败或外部文件变化时，工具停止并保留已有数据。

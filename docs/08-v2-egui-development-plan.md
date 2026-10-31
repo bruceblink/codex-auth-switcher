@@ -89,7 +89,7 @@ Linux/macOS 打包命令为 `./scripts/package-unix.sh`。CI 产物包含版本�
 ### P1 发布质量维护
 
 - 每次发布运行格式检查、Clippy、workspace 测试，生成 Windows、Linux 和 macOS Release 构件，并在 Windows 上运行便携包和原生验收。
-- 本地和 CI 使用仓库锁定的 Rust 1.95 工具链，保持 MSRV、格式检查和 Clippy 结果一致。
+- 本地和 CI 使用 Rust stable 工具链，当前验证版本为 1.99.1；格式检查、Clippy 和 workspace 测试使用同一稳定版本。
 - 记录 Windows 原生窗口截图、版本号、构建产物和隔离目录检查结果。
 - 保持 `main` 分支只包含已验证的提交，发布包不依赖 Python、Rust 或包管理器环境。
 
