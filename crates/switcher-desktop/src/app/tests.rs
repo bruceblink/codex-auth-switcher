@@ -1,491 +1,270 @@
-use super::*;
-use egui::accesskit::Role;
-use egui_kittest::{
-    Harness,
-    kittest::{NodeT as _, Queryable as _},
+use super::{DialogFuture, FileDialogs, Switcher};
+use gpui_kit::{
+    AnyWindowHandle, AppContext, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
+    point, px, size,
+    test::{TestAppContextExt, TestWindowExt},
 };
-use std::{cell::RefCell, fs, rc::Rc, thread};
+use std::{fs, path::PathBuf, sync::Arc, time::Duration};
+use switcher_core::{Mode, Paths, Store};
 
-#[test]
-fn key_hint_never_reveals_short_keys_or_the_middle() {
-    assert_eq!(masked_hint(""), "");
-    assert_eq!(masked_hint("abc"), "已输入密钥");
-    assert_eq!(masked_hint("synthetic-demo-key"), "synt······-key");
-    assert!(!masked_hint("synthetic-demo-key").contains("hetic-demo"));
-}
-
-#[test]
-fn user_facing_errors_preserve_recovery_guidance() {
-    assert_eq!(
-        user_error(&switcher_core::Error(
-            "Encryption key is missing. Restore vault.key; existing ciphertext was not changed."
-        )),
-        "本地加密密钥缺失。请恢复 vault.key；工具未修改现有密文。"
-    );
-    assert_eq!(
-        user_error(&switcher_core::Error("Invalid API base URL.")),
-        "Base URL 格式无效，请检查协议和主机名。"
-    );
-}
-
-#[test]
-fn authentication_source_labels_are_safe_and_localized() {
-    assert_eq!(super::format::auth_source_name("user input"), "界面输入");
-    assert_eq!(
-        super::format::auth_source_name("environment"),
-        "旧存档环境来源"
-    );
-    assert_eq!(
-        super::format::auth_source_name("custom-api-auth.json"),
-        "custom-api-auth.json"
-    );
-    assert_eq!(
-        super::format::config_source_name("latest active config"),
-        "当前活动配置"
-    );
-    assert_eq!(
-        super::format::auth_source_name("latest active authentication"),
-        "当前活动认证"
-    );
-    assert_eq!(super::format::setting_value("configured"), "已配置");
-    assert_eq!(super::format::setting_value("not set"), "未设置");
-}
-
-/// Builds the same immediate-mode controls as the native window with synthetic files.
-fn harness_for(
+fn open(
+    cx: &mut TestAppContext,
     home: PathBuf,
-    dialogs: FileDialogs,
-) -> (Harness<'static>, Rc<RefCell<SwitcherApp>>) {
-    let paths = match Paths::resolve(Some(home)) {
-        Ok(paths) => paths,
-        Err(error) => panic!("could not resolve synthetic UI directory: {error}"),
+    width: f32,
+    height: f32,
+) -> (AnyWindowHandle, Entity<Switcher>) {
+    let paths = Paths::resolve(Some(home))
+        .unwrap_or_else(|error| panic!("cannot resolve test directory: {error}"));
+    let dialogs = FileDialogs {
+        pick_file: Arc::new(|_| Box::pin(async { None }) as DialogFuture),
+        pick_folder: Arc::new(|| Box::pin(async { None }) as DialogFuture),
     };
-    let app = Rc::new(RefCell::new(SwitcherApp::with_dialogs(
-        Store::isolated(paths),
-        dialogs,
-    )));
-    let ui_app = Rc::clone(&app);
-    let harness = Harness::builder()
-        .with_size([720.0, 600.0])
-        // Layout and repaint settling can exceed egui_kittest's default four steps.
-        .with_max_steps(16)
-        .allow_missing_glyphs()
-        .build_ui(move |ui| ui_app.borrow_mut().run_ui(ui));
-    (harness, app)
+    cx.update(gpui_kit::init);
+    cx.update(|app| {
+        gpui_kit::component::Theme::set_scrollbar_mode(
+            gpui_kit::component::scroll::ScrollbarMode::Always,
+            app,
+        );
+    });
+    let (handle, content) = cx.update(|app| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Default::default(),
+                    size: size(px(width), px(height)),
+                })),
+                ..Default::default()
+            },
+            app,
+            |window, app| {
+                app.new(|cx| Switcher::with_dialogs(Store::isolated(paths), dialogs, window, cx))
+            },
+        )
+        .unwrap_or_else(|error| panic!("cannot open GPUI test window: {error}"))
+    });
+    (handle, content)
 }
 
-/// Lets worker-thread file operations finish before the next UI action is asserted.
-fn wait_until_idle(harness: &mut Harness<'static>, app: &Rc<RefCell<SwitcherApp>>) {
-    for _ in 0..200 {
-        harness.run_steps(2);
-        if !app.borrow().busy {
-            harness.run();
-            return;
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
-    panic!("synthetic UI operation did not finish");
+async fn idle(cx: &mut TestAppContext, window: AnyWindowHandle, app: &Entity<Switcher>) {
+    cx.wait_for(window, Duration::from_secs(3), |_, cx| !app.read(cx).busy)
+        .await;
 }
 
-fn click_button(harness: &mut Harness, label: &str) {
-    let button = harness.get_by_role_and_label(Role::Button, label);
-    button.scroll_to_me();
-    harness.run();
-    let button = harness.get_by_role_and_label(Role::Button, label);
-    button.click();
-    harness.run_steps(2);
+fn click(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(id, cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot click {id}: {error}"));
 }
 
-#[test]
-fn controls_initialize_import_preview_and_switch_both_modes() {
-    let temp = match tempfile::tempdir() {
-        Ok(temp) => temp,
-        Err(error) => panic!("could not create synthetic UI directory: {error}"),
-    };
+#[gpui_kit::test]
+async fn switches_modes_and_clears_the_api_input(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
     let home = temp.path().join("codex-home");
-    if let Err(error) = crate::demo::create(&home) {
-        panic!("could not create synthetic UI configuration: {error}");
-    }
-    let api_config = temp.path().join("custom-api.toml");
-    let api_auth = temp.path().join("custom-api-auth.json");
-    if let Err(error) = fs::write(
-        &api_config,
-        "model_provider = \"CustomApi\"\nmodel = \"imported-ui-model\"\nmodel_reasoning_effort = \"medium\"\n[model_providers.CustomApi]\nname = \"Synthetic gateway\"\nbase_url = \"https://gateway.example.invalid/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n",
-    ) {
-        panic!("could not create synthetic API configuration: {error}");
-    }
-    if let Err(error) = fs::write(&api_auth, r#"{"OPENAI_API_KEY":"synthetic-ui-key"}"#) {
-        panic!("could not create synthetic API authentication: {error}");
-    }
-    let config_for_dialog = api_config.clone();
-    let auth_for_dialog = api_auth.clone();
-    let (mut harness, app) = harness_for(
-        home.clone(),
-        FileDialogs {
-            pick_file: Arc::new(move |auth| {
-                Some(if auth {
-                    auth_for_dialog.clone()
-                } else {
-                    config_for_dialog.clone()
-                })
-            }),
-            pick_folder: Arc::new(|| None),
-        },
-    );
-    wait_until_idle(&mut harness, &app);
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let (window, app) = open(cx, home.clone(), 1200., 1100.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
 
-    assert!(app.borrow().status.is_some());
-    click_button(&mut harness, "初始化模式");
-    wait_until_idle(&mut harness, &app);
-    assert!(
-        app.borrow()
+    let old_key = app.read_with(cx, |view, _| view.key.entity_id());
+    cx.update_window(window, |_, window, cx| {
+        let key = app.read(cx).key.clone();
+        key.update(cx, |state, cx| {
+            state.set_value("synthetic-gpui-input", window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot edit test input: {error}"));
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| {
+        view.prepared
+            .as_ref()
+            .is_some_and(|item| item.preview.changed)
+    }));
+    click(cx, window, "apply");
+    idle(cx, window, &app).await;
+    assert_eq!(
+        app.read_with(cx, |view, _| view
             .status
             .as_ref()
-            .is_some_and(|status| status.initialized)
-    );
-
-    click_button(&mut harness, "导入配置 TOML");
-    wait_until_idle(&mut harness, &app);
-    click_button(&mut harness, "导入认证 JSON");
-    wait_until_idle(&mut harness, &app);
-    let api_profile = app
-        .borrow()
-        .status
-        .as_ref()
-        .and_then(|status| {
-            status
-                .modes
-                .iter()
-                .find(|profile| profile.mode == Mode::Api)
-        })
-        .cloned();
-    assert!(api_profile.is_some_and(|profile| {
-        profile.ready
-            && profile.provider == "CustomApi"
-            && profile.model == "imported-ui-model"
-            && profile.config_source == "custom-api.toml"
-            && profile.auth_source == "custom-api-auth.json"
-    }));
-
-    click_button(&mut harness, "API key");
-    app.borrow_mut().key = Zeroizing::new("synthetic-input-ui-key".into());
-    click_button(&mut harness, "清空");
-    assert!(app.borrow().key.is_empty());
-    app.borrow_mut().key = Zeroizing::new("synthetic-input-ui-key".into());
-    click_button(&mut harness, "预览变更");
-    wait_until_idle(&mut harness, &app);
-    assert!(app.borrow().prepared.is_some());
-    assert_eq!(
-        app.borrow()
-            .prepared
-            .as_ref()
-            .map(|prepared| prepared.preview.auth_source.as_str()),
-        Some("user input")
-    );
-    assert_eq!(
-        app.borrow().status.as_ref().and_then(|status| status.mode),
-        Some(Mode::Subscription)
-    );
-    click_button(&mut harness, "应用切换");
-    // A fast worker can finish during the final harness frame after the click.
-    wait_until_idle(&mut harness, &app);
-    assert_eq!(
-        app.borrow().status.as_ref().and_then(|status| status.mode),
-        Some(Mode::Api),
-        "{}",
-        app.borrow().message
-    );
-    assert!(app.borrow().message.contains("已切换到 API key"));
-    let active_config = fs::read_to_string(home.join("config.toml"));
-    assert!(active_config.is_ok_and(|text| {
-        text.contains("model = \"imported-ui-model\"")
-            && text.contains("[features]")
-            && text.contains("[projects.\"F:/example\"]")
-    }));
-    let active_auth = fs::read_to_string(home.join("auth.json"));
-    assert!(active_auth.is_ok_and(|text| text.contains("synthetic-input-ui-key")));
-    assert!(app.borrow().key.is_empty());
-
-    click_button(&mut harness, "预览变更");
-    wait_until_idle(&mut harness, &app);
-    assert!(
-        app.borrow()
-            .prepared
-            .as_ref()
-            .is_some_and(|prepared| !prepared.preview.changed)
-    );
-    assert!(
-        harness
-            .get_by_role_and_label(Role::Button, "应用切换")
-            .accesskit_node()
-            .is_disabled()
-    );
-    #[cfg(windows)]
-    assert!(
-        !harness
-            .get_by_role_and_label(Role::Button, "重启 Codex")
-            .accesskit_node()
-            .is_disabled()
-    );
-
-    click_button(&mut harness, "订阅");
-    click_button(&mut harness, "预览变更");
-    wait_until_idle(&mut harness, &app);
-    click_button(&mut harness, "应用切换");
-    wait_until_idle(&mut harness, &app);
-    assert_eq!(
-        app.borrow().status.as_ref().and_then(|status| status.mode),
-        Some(Mode::Subscription)
-    );
-    let active_config = fs::read_to_string(home.join("config.toml"));
-    assert!(active_config.is_ok_and(|text| text.contains("model = \"demo-subscription-model\"")));
-    let active_auth = fs::read_to_string(home.join("auth.json"));
-    assert!(active_auth.is_ok_and(|text| text.contains("synthetic-access")));
-}
-
-#[test]
-fn switch_actions_stay_visible_with_long_previews_at_supported_window_sizes() -> anyhow::Result<()>
-{
-    let temp = tempfile::tempdir()?;
-    let home = temp.path().join("codex-home");
-    crate::demo::create(&home)?;
-    let config_path = home.join("config.toml");
-    let config = fs::read_to_string(&config_path)?;
-    fs::write(
-        &config_path,
-        format!(
-            "plan_mode_reasoning_effort = \"high\"\nmodel_reasoning_summary = \"detailed\"\nmodel_supports_reasoning_summaries = true\nmodel_context_window = 375000\nmodel_auto_compact_token_limit = 320000\ndisable_response_storage = true\nservice_tier = \"priority\"\npersonality = \"pragmatic\"\n{config}"
-        ),
-    )?;
-    let (mut harness, app) = harness_for(
-        home,
-        FileDialogs {
-            pick_file: Arc::new(|_| None),
-            pick_folder: Arc::new(|| None),
-        },
-    );
-    wait_until_idle(&mut harness, &app);
-    click_button(&mut harness, "初始化模式");
-    wait_until_idle(&mut harness, &app);
-    click_button(&mut harness, "预览变更");
-    wait_until_idle(&mut harness, &app);
-    assert!(
-        app.borrow()
-            .prepared
-            .as_ref()
-            .is_some_and(|prepared| prepared.preview.changes.len() >= 10)
-    );
-
-    for size in [egui::vec2(920.0, 640.0), egui::vec2(720.0, 560.0)] {
-        harness.set_size(size);
-        harness.run();
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-        for label in ["预览变更", "应用切换"] {
-            let button = harness.get_by_role_and_label(Role::Button, label);
-            assert!(
-                viewport.contains_rect(button.rect()),
-                "{label} is clipped at {size:?}: {:?}",
-                button.rect()
-            );
-        }
-        // Scroll the large preview away, then assert that the footer does not move with it.
-        let footer_before = harness
-            .get_by_role_and_label(Role::Button, "应用切换")
-            .rect();
-        harness.get_by_label("认证：替换为目标认证").scroll_to_me();
-        harness.run();
-        assert_eq!(
-            footer_before,
-            harness
-                .get_by_role_and_label(Role::Button, "应用切换")
-                .rect()
-        );
-    }
-    // Apply from the footer without scrolling it into view.
-    harness
-        .get_by_role_and_label(Role::Button, "应用切换")
-        .click();
-    wait_until_idle(&mut harness, &app);
-    assert_eq!(
-        app.borrow().status.as_ref().and_then(|status| status.mode),
+            .and_then(|status| status.mode)),
         Some(Mode::Api)
     );
-    Ok(())
+    assert!(app.read_with(cx, |view, cx| view.key.read(cx).value().is_empty()));
+    assert_ne!(old_key, app.read_with(cx, |view, _| view.key.entity_id()));
+
+    click(cx, window, "subscription");
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+    click(cx, window, "apply");
+    idle(cx, window, &app).await;
+    assert_eq!(
+        app.read_with(cx, |view, _| view
+            .status
+            .as_ref()
+            .and_then(|status| status.mode)),
+        Some(Mode::Subscription)
+    );
+    let config = fs::read_to_string(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot read test config: {error}"));
+    assert!(config.contains("[projects.\"F:/example\"]"));
+    assert!(config.contains("[features]"));
 }
 
-#[test]
-fn first_run_creates_official_defaults_then_applies_entered_api_key() -> anyhow::Result<()> {
-    let temp = tempfile::tempdir()?;
-    let home = temp.path().join("new-codex-home");
-    let (mut harness, app) = harness_for(
-        home.clone(),
-        FileDialogs {
-            pick_file: Arc::new(|_| None),
-            pick_folder: Arc::new(|| None),
-        },
-    );
-    wait_until_idle(&mut harness, &app);
+#[gpui_kit::test]
+async fn first_run_creates_defaults_without_fake_authentication(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    let (window, app) = open(cx, home.clone(), 1040., 740.);
+    idle(cx, window, &app).await;
     assert!(!home.join("config.toml").exists());
-    assert!(!home.join("auth.json").exists());
-    click_button(&mut harness, "创建默认配置");
-    wait_until_idle(&mut harness, &app);
-    let config = fs::read_to_string(home.join("config.toml"))?;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    let config = fs::read_to_string(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot read test config: {error}"));
     assert!(config.contains("cli_auth_credentials_store"));
     assert!(!config.contains("gateway"));
     assert!(!home.join("auth.json").exists());
-    assert_eq!(app.borrow().api_provider, "openai");
-    assert_eq!(app.borrow().endpoint, "https://api.openai.com/v1");
-    app.borrow_mut().key = Zeroizing::new("synthetic-first-run-key".into());
-    click_button(&mut harness, "预览变更");
-    wait_until_idle(&mut harness, &app);
-    assert!(app.borrow().prepared.is_some(), "{}", app.borrow().message);
-    assert!(!home.join("auth.json").exists());
-    click_button(&mut harness, "应用切换");
-    wait_until_idle(&mut harness, &app);
     assert_eq!(
-        app.borrow().status.as_ref().and_then(|status| status.mode),
-        Some(Mode::Api)
+        app.read_with(cx, |view, cx| view.endpoint.read(cx).value().to_string()),
+        "https://api.openai.com/v1"
     );
-    let auth = fs::read_to_string(home.join("auth.json"))?;
-    assert!(auth.contains("synthetic-first-run-key"));
-    assert!(app.borrow().key.is_empty());
-    Ok(())
 }
 
-#[test]
-#[cfg(windows)]
-fn restart_requires_confirmation_and_is_blocked_by_a_pending_preview() -> anyhow::Result<()> {
-    let temp = tempfile::tempdir()?;
+#[gpui_kit::test]
+async fn controls_stay_visible_and_picker_cancellation_is_safe(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
     let home = temp.path().join("codex-home");
-    crate::demo::create(&home)?;
-    let (mut harness, app) = harness_for(
-        home,
-        FileDialogs {
-            pick_file: Arc::new(|_| None),
-            pick_folder: Arc::new(|| None),
-        },
-    );
-    wait_until_idle(&mut harness, &app);
-    click_button(&mut harness, "初始化模式");
-    wait_until_idle(&mut harness, &app);
-    click_button(&mut harness, "重启 Codex");
-    assert!(app.borrow().restart_confirmation_open);
-    assert!(!app.borrow().busy);
-    click_button(&mut harness, "取消");
-    assert!(!app.borrow().restart_confirmation_open);
-    click_button(&mut harness, "预览变更");
-    wait_until_idle(&mut harness, &app);
-    assert!(
-        harness
-            .get_by_role_and_label(Role::Button, "重启 Codex")
-            .accesskit_node()
-            .is_disabled()
-    );
-    Ok(())
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let (window, app) = open(cx, home.clone(), 720., 560.);
+    idle(cx, window, &app).await;
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        for id in ["preview", "apply", "restart"] {
+            let button = window.find(id);
+            assert!(button.visible(), "{id} is outside the window");
+            assert!(button.bounds().bottom() <= window.viewport_size().height);
+        }
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect test window: {error}"));
+    let before = fs::read(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot read test config: {error}"));
+    click(cx, window, "browse");
+    idle(cx, window, &app).await;
+    let after = fs::read(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot read test config: {error}"));
+    assert_eq!(before, after);
+    assert!(app.read_with(cx, |view, _| view.message.contains("取消")));
 }
 
-#[test]
-fn cancelled_file_and_folder_pickers_keep_controls_responsive() {
-    let temp = match tempfile::tempdir() {
-        Ok(temp) => temp,
-        Err(error) => panic!("could not create synthetic UI directory: {error}"),
-    };
+#[gpui_kit::test]
+async fn scrollbars_reach_overflowing_switch_and_model_content(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
     let home = temp.path().join("codex-home");
-    if let Err(error) = crate::demo::create(&home) {
-        panic!("could not create synthetic UI configuration: {error}");
-    }
-    let paths_before =
-        ["config.toml", "auth.json"].map(|name| fs::read(home.join(name)).unwrap_or_default());
-    let (mut harness, app) = harness_for(
-        home,
-        FileDialogs {
-            pick_file: Arc::new(|_| None),
-            pick_folder: Arc::new(|| None),
-        },
-    );
-    wait_until_idle(&mut harness, &app);
-
-    click_button(&mut harness, "导入配置 TOML");
-    wait_until_idle(&mut harness, &app);
-    assert!(app.borrow().message.contains("文件选择已取消"));
-    click_button(&mut harness, "选择目录");
-    wait_until_idle(&mut harness, &app);
-    assert!(
-        app.borrow().message.contains("目录选择已取消"),
-        "{}",
-        app.borrow().message
-    );
-    assert!(!app.borrow().busy);
-    assert_eq!(
-        paths_before,
-        ["config.toml", "auth.json"]
-            .map(|name| { fs::read(app.borrow().store.paths.home.join(name)).unwrap_or_default() })
-    );
-    click_button(&mut harness, "刷新状态");
-    wait_until_idle(&mut harness, &app);
-    assert!(app.borrow().status.is_some());
-}
-
-#[test]
-fn model_catalog_controls_load_clone_and_save_with_a_backup() {
-    let temp = match tempfile::tempdir() {
-        Ok(temp) => temp,
-        Err(error) => panic!("could not create synthetic model directory: {error}"),
-    };
-    let home = temp.path().join("codex-home");
-    if let Err(error) = crate::demo::create(&home) {
-        panic!("could not create synthetic UI configuration: {error}");
-    }
-    let initial = r#"{"catalog_marker":"preserved","models":[{"slug":"synthetic-model","display_name":"Synthetic Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Synthetic high"},{"effort":"low","description":"Synthetic low"}],"priority":4,"context_window":65536}]}"#;
-    if let Err(error) = fs::write(home.join("models-codex.json"), initial) {
-        panic!("could not create synthetic model catalog: {error}");
-    }
-    let (mut harness, app) = harness_for(
-        home.clone(),
-        FileDialogs {
-            pick_file: Arc::new(|_| None),
-            pick_folder: Arc::new(|| None),
-        },
-    );
-    wait_until_idle(&mut harness, &app);
-
-    click_button(&mut harness, "模型目录");
-    click_button(&mut harness, "读取 models-codex.json");
-    wait_until_idle(&mut harness, &app);
-    assert!(app.borrow().model_catalog.is_some());
-    click_button(&mut harness, "复制当前模型");
-    {
-        let mut current = app.borrow_mut();
-        let Some(catalog) = current.model_catalog.as_mut() else {
-            panic!("model catalog was not loaded");
-        };
-        let Some(model) = catalog.models.get_mut(1) else {
-            panic!("cloned model was not added");
-        };
-        model.slug = "synthetic-model-2".into();
-        model.display_name = "Synthetic Model Two".into();
-    }
-    click_button(&mut harness, "保存模型选项");
-    wait_until_idle(&mut harness, &app);
-
-    let current: serde_json::Value = match fs::read(home.join("models-codex.json"))
-        .map_err(anyhow::Error::from)
-        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(anyhow::Error::from))
-    {
-        Ok(value) => value,
-        Err(error) => panic!("saved synthetic catalog is invalid: {error}"),
-    };
-    assert_eq!(current["catalog_marker"], "preserved");
-    assert_eq!(current["models"].as_array().map(Vec::len), Some(2));
-    assert_eq!(current["models"][1]["slug"], "synthetic-model-2");
-    assert_eq!(current["models"][1]["context_window"], 65536);
-    assert!(fs::read_dir(&home).is_ok_and(|entries| {
-        entries.filter_map(std::result::Result::ok).any(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("models-codex.json.bak-")
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("models-codex.json");
+    let models = (0..48)
+        .map(|index| {
+            format!(
+                r#"{{"slug":"model-{index}","display_name":"Model {index}","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{{"effort":"high","description":"Synthetic high"}}],"priority":{index}}}"#
+            )
         })
-    }));
-    assert!(!app.borrow().catalog_dirty);
+        .collect::<Vec<_>>()
+        .join(",");
+    fs::write(
+        &catalog_path,
+        format!(r#"{{"catalog_version":3,"models":[{models}]}}"#),
+    )
+    .unwrap_or_else(|error| panic!("cannot write test model catalog: {error}"));
+    let catalog_path = catalog_path.to_string_lossy().replace('\\', "/");
+    let config_path = home.join("config.toml");
+    let config = fs::read_to_string(&config_path)
+        .unwrap_or_else(|error| panic!("cannot read test config: {error}"));
+    fs::write(
+        &config_path,
+        format!("model_catalog_json = \"{catalog_path}\"\n{config}"),
+    )
+    .unwrap_or_else(|error| panic!("cannot configure test model catalog: {error}"));
+
+    let (window, app) = open(cx, home, 720., 560.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    cx.update_window(window, |_, window, cx| {
+        let key = app.read(cx).key.clone();
+        key.update(cx, |state, cx| {
+            state.set_value("synthetic-scroll-test-key", window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot seed preview input: {error}"));
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let scroll = app.read(cx).switch_scroll.clone();
+        assert!(
+            scroll.max_offset().y > px(0.),
+            "switch page content does not overflow"
+        );
+        let bounds = scroll.bounds();
+        let start = point(bounds.right() - px(8.), bounds.top() + px(20.));
+        let end = point(bounds.right() - px(8.), bounds.bottom() - px(20.));
+        let offset_before = scroll.offset().y;
+        window.drag(start, end, cx);
+        assert!(
+            scroll.offset().y < offset_before,
+            "dragging the switch page scrollbar did not move its content"
+        );
+        for id in ["preview", "apply", "restart"] {
+            let button = window.find(id);
+            assert!(button.visible(), "{id} is outside the window");
+            assert!(button.bounds().bottom() <= window.viewport_size().height);
+        }
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect switch page scrolling: {error}"));
+
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let model_list_scroll = app.read(cx).model_list_scroll.clone();
+        assert!(
+            model_list_scroll.max_offset().y > px(0.),
+            "model list content does not overflow"
+        );
+        let list_bounds = model_list_scroll.bounds();
+        let start = point(list_bounds.right() - px(8.), list_bounds.top() + px(20.));
+        let end = point(list_bounds.right() - px(8.), list_bounds.bottom() - px(20.));
+        let list_offset_before = model_list_scroll.offset().y;
+        window.drag(start, end, cx);
+        assert!(
+            model_list_scroll.offset().y < list_offset_before,
+            "dragging the model list scrollbar did not move the list"
+        );
+        let catalog_scroll = app.read(cx).catalog_scroll.clone();
+        assert!(
+            catalog_scroll.max_offset().y > px(0.),
+            "model catalog page content does not overflow"
+        );
+        let catalog_bounds = catalog_scroll.bounds();
+        let start = point(
+            catalog_bounds.right() - px(8.),
+            catalog_bounds.top() + px(20.),
+        );
+        let end = point(
+            catalog_bounds.right() - px(8.),
+            catalog_bounds.bottom() - px(20.),
+        );
+        let catalog_offset_before = catalog_scroll.offset().y;
+        window.drag(start, end, cx);
+        assert!(
+            catalog_scroll.offset().y < catalog_offset_before,
+            "dragging the model catalog page scrollbar did not move its content"
+        );
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect model list scrolling: {error}"));
 }

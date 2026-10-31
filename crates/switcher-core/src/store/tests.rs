@@ -656,6 +656,48 @@ const MODEL_CATALOG: &str = r#"{
   ]
 }"#;
 
+fn configure_model_catalog(paths: &Paths, file_name: &str) -> anyhow::Result<()> {
+    let path = paths
+        .home
+        .join(file_name)
+        .to_string_lossy()
+        .replace('\\', "/");
+    configure_model_catalog_value(paths, &path)
+}
+
+fn configure_model_catalog_value(paths: &Paths, value: &str) -> anyhow::Result<()> {
+    fs::write(
+        paths.config(),
+        format!("model_catalog_json = \"{value}\"\n"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn model_catalog_requires_an_explicit_config_path() -> anyhow::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let paths = Paths {
+        home: temporary.path().into(),
+    };
+    let store = Store::isolated(paths.clone());
+    fs::write(paths.config(), "model = \"synthetic-model\"\n")?;
+    fs::write(paths.home.join("models-codex.json"), "invalid catalog")?;
+    fs::write(paths.home.join("models_cache.json"), "invalid cache")?;
+
+    let configured = config::parse(b"model = \"synthetic-model\"\n")?;
+    store.check_model(&configured)?;
+
+    let error = store
+        .load_model_catalog()
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("missing model_catalog_json was accepted"))?;
+    assert_eq!(
+        error.0,
+        "Codex model catalog path is not configured in config.toml."
+    );
+    Ok(())
+}
+
 #[test]
 fn model_catalog_edits_are_backed_up_and_preserve_unknown_metadata() -> anyhow::Result<()> {
     let temporary = tempfile::tempdir()?;
@@ -663,8 +705,13 @@ fn model_catalog_edits_are_backed_up_and_preserve_unknown_metadata() -> anyhow::
         home: temporary.path().into(),
     };
     let store = Store::isolated(paths.clone());
-    fs::write(paths.models_catalog(), MODEL_CATALOG)?;
-    let original = fs::read(paths.models_catalog())?;
+    let external = temporary.path().join("external-catalogs");
+    fs::create_dir(&external)?;
+    let catalog_path = external.join("custom-models.json");
+    let configured = catalog_path.to_string_lossy().replace('\\', "/");
+    configure_model_catalog_value(&paths, &configured)?;
+    fs::write(&catalog_path, MODEL_CATALOG)?;
+    let original = fs::read(&catalog_path)?;
     let mut catalog = store.load_model_catalog()?;
     catalog.models[0].display_name = "Edited Synthetic Model".into();
     catalog.models[0].default_reasoning_level = "low".into();
@@ -681,7 +728,7 @@ fn model_catalog_edits_are_backed_up_and_preserve_unknown_metadata() -> anyhow::
     assert_eq!(saved.models[0].display_name, "Edited Synthetic Model");
     assert_eq!(result.model_count, 1);
 
-    let written: serde_json::Value = serde_json::from_slice(&fs::read(paths.models_catalog())?)?;
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&catalog_path)?)?;
     assert_eq!(written["catalog_version"], 3);
     assert_eq!(written["models"][0]["context_window"], 123456);
     assert_eq!(written["models"][0]["capability_marker"]["preserve"], true);
@@ -694,19 +741,47 @@ fn model_catalog_edits_are_backed_up_and_preserve_unknown_metadata() -> anyhow::
 }
 
 #[test]
+fn model_catalog_relative_path_resolves_from_config_directory() -> anyhow::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let paths = Paths {
+        home: temporary.path().into(),
+    };
+    let store = Store::isolated(paths.clone());
+    configure_model_catalog_value(&paths, "relative-models.json")?;
+    let catalog_path = paths.home.join("relative-models.json");
+    fs::write(&catalog_path, MODEL_CATALOG)?;
+
+    let mut catalog = store.load_model_catalog()?;
+    assert_eq!(catalog.path, catalog_path.to_string_lossy());
+    catalog.models[0].display_name = "Relative Model".into();
+    let (_, result) = store.save_model_catalog(catalog)?;
+    let backup = result
+        .backup
+        .ok_or_else(|| anyhow::anyhow!("relative catalog backup was not created"))?;
+    assert_eq!(Path::new(&backup).parent(), catalog_path.parent());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&catalog_path)?)?["models"][0]["display_name"],
+        "Relative Model"
+    );
+    Ok(())
+}
+
+#[test]
 fn model_catalog_save_rejects_stale_or_duplicate_model_data() -> anyhow::Result<()> {
     let temporary = tempfile::tempdir()?;
     let paths = Paths {
         home: temporary.path().into(),
     };
     let store = Store::isolated(paths.clone());
-    fs::write(paths.models_catalog(), MODEL_CATALOG)?;
+    configure_model_catalog(&paths, "different-name.json")?;
+    let catalog_path = paths.home.join("different-name.json");
+    fs::write(&catalog_path, MODEL_CATALOG)?;
     let mut stale = store.load_model_catalog()?;
     stale.models[0].display_name = "Uncommitted edit".into();
-    fs::write(paths.models_catalog(), format!("{MODEL_CATALOG}\n"))?;
+    fs::write(&catalog_path, format!("{MODEL_CATALOG}\n"))?;
     assert!(store.save_model_catalog(stale).is_err());
     assert_eq!(
-        fs::read(paths.models_catalog())?,
+        fs::read(&catalog_path)?,
         format!("{MODEL_CATALOG}\n").as_bytes()
     );
     assert_eq!(
@@ -715,7 +790,7 @@ fn model_catalog_save_rejects_stale_or_duplicate_model_data() -> anyhow::Result<
             .filter(|entry| entry
                 .file_name()
                 .to_string_lossy()
-                .starts_with("models-codex.json.bak-"))
+                .starts_with("different-name.json.bak-"))
             .count(),
         0
     );
@@ -723,6 +798,44 @@ fn model_catalog_save_rejects_stale_or_duplicate_model_data() -> anyhow::Result<
     let mut duplicate = store.load_model_catalog()?;
     duplicate.models.push(duplicate.models[0].clone());
     assert!(store.save_model_catalog(duplicate).is_err());
+    Ok(())
+}
+
+#[test]
+fn model_catalog_save_rejects_a_changed_config_path() -> anyhow::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let paths = Paths {
+        home: temporary.path().into(),
+    };
+    let store = Store::isolated(paths.clone());
+    configure_model_catalog(&paths, "first-models.json")?;
+    let first_path = paths.home.join("first-models.json");
+    let second_path = paths.home.join("second-models.json");
+    fs::write(&first_path, MODEL_CATALOG)?;
+    fs::write(&second_path, MODEL_CATALOG)?;
+    let mut catalog = store.load_model_catalog()?;
+    catalog.models[0].display_name = "Changed while pending".into();
+    configure_model_catalog(&paths, "second-models.json")?;
+
+    let error = store
+        .save_model_catalog(catalog)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("changed model catalog path was accepted"))?;
+    assert_eq!(
+        error.0,
+        "Codex model catalog path changed after it was loaded. Reload before saving."
+    );
+    assert_eq!(fs::read(&second_path)?, MODEL_CATALOG.as_bytes());
+    assert_eq!(
+        fs::read_dir(&paths.home)?
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("second-models.json.bak-"))
+            .count(),
+        0
+    );
     Ok(())
 }
 
@@ -933,9 +1046,16 @@ fn encryption_uses_nonces_and_authenticated_purpose() -> anyhow::Result<()> {
 #[test]
 fn reasoning_effort_is_checked_before_any_write() -> anyhow::Result<()> {
     let data = Data::new()?;
+    fs::write(
+        data.store
+            .paths
+            .home
+            .join("config.toml.bak-20261024-170412"),
+        format!("model_catalog_json = \"reasoning-models.json\"\n{SUBSCRIPTION}"),
+    )?;
     data.initialize()?;
     fs::write(
-        data.store.paths.home.join("models_cache.json"),
+        data.store.paths.home.join("reasoning-models.json"),
         r#"{"models":[{"slug":"test-subscription-model","supported_reasoning_levels":[{"effort":"high"}]}]}"#,
     )?;
     let before = data.active()?;

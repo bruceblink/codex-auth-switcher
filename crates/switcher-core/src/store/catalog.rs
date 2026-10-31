@@ -1,13 +1,14 @@
 use super::Store;
 use crate::{
-    Error, Result,
+    Error, Result, config,
     files::{self, Lock},
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
+use toml_edit::DocumentMut;
 
 /// Editable view of the Codex model catalog, bound to the file version it loaded.
 #[derive(Clone)]
@@ -69,12 +70,50 @@ pub struct ModelCatalogSaveResult {
     pub model_count: usize,
 }
 
+/// Resolve the path explicitly selected by Codex in `config.toml`.
+///
+/// A missing setting means that Codex owns the catalog selection internally;
+/// the switcher must not guess a filename such as `models-codex.json`.
+/// Relative paths are resolved from the directory containing `config.toml`,
+/// matching Codex's configuration loader.
+pub(super) fn configured_model_catalog_path(
+    doc: &DocumentMut,
+    config_dir: &Path,
+) -> Result<Option<PathBuf>> {
+    let Some(item) = doc.get("model_catalog_json") else {
+        return Ok(None);
+    };
+    let path = item
+        .as_str()
+        .ok_or(Error("Model catalog path must be a string."))?;
+    if path.is_empty() || path.len() > 4096 || path.chars().any(|character| character.is_control())
+    {
+        return Err(Error("Model catalog path is invalid."));
+    }
+    let path = PathBuf::from(path);
+    Ok(Some(if path.is_absolute() {
+        path
+    } else {
+        config_dir.join(path)
+    }))
+}
+
+fn configured_catalog_path(store: &Store) -> Result<PathBuf> {
+    let bytes = files::read(&store.paths.config(), files::CONFIG_LIMIT)?.ok_or(Error(
+        "Codex config.toml was not found. Choose a valid directory.",
+    ))?;
+    let document = config::parse(&bytes)?;
+    configured_model_catalog_path(&document, &store.paths.home)?.ok_or(Error(
+        "Codex model catalog path is not configured in config.toml.",
+    ))
+}
+
 impl Store {
     /// Load the Codex model catalog and retain its source bytes for conflict detection.
     pub fn load_model_catalog(&self) -> Result<ModelCatalog> {
-        let path = self.paths.models_catalog();
+        let path = configured_catalog_path(self)?;
         let original = files::read(&path, files::CONFIG_LIMIT)?
-            .ok_or(Error("Codex models-codex.json was not found."))?;
+            .ok_or(Error("Configured Codex model catalog was not found."))?;
         let document: ModelCatalogDocument = serde_json::from_slice(&original)
             .map_err(|_| Error("Codex model catalog JSON is invalid."))?;
         validate_model_catalog(&document.models)?;
@@ -92,18 +131,21 @@ impl Store {
         &self,
         mut catalog: ModelCatalog,
     ) -> Result<(ModelCatalog, ModelCatalogSaveResult)> {
-        if catalog.home != self.paths.home
-            || catalog.path != self.paths.models_catalog().to_string_lossy()
-        {
+        if catalog.home != self.paths.home {
             return Err(Error(
                 "The model catalog belongs to another Codex directory.",
             ));
         }
         validate_model_catalog(&catalog.models)?;
         let _lock = Lock::acquire(&self.paths)?;
-        let path = self.paths.models_catalog();
+        let path = configured_catalog_path(self)?;
+        if catalog.path != path.to_string_lossy() {
+            return Err(Error(
+                "Codex model catalog path changed after it was loaded. Reload before saving.",
+            ));
+        }
         let current = files::read(&path, files::CONFIG_LIMIT)?
-            .ok_or(Error("Codex models-codex.json was not found."))?;
+            .ok_or(Error("Configured Codex model catalog was not found."))?;
         if current != catalog.original {
             return Err(Error(
                 "The model catalog changed after it was loaded. Reload before saving.",
@@ -119,7 +161,7 @@ impl Store {
         let backup = if updated == current {
             None
         } else {
-            let backup = self.backup_model_catalog(&current)?;
+            let backup = self.backup_model_catalog(&path, &current)?;
             files::write(&path, &updated)?;
             catalog.original.clone_from(&updated);
             Some(backup.to_string_lossy().into_owned())
@@ -133,23 +175,25 @@ impl Store {
         ))
     }
 
-    fn backup_model_catalog(&self, bytes: &[u8]) -> Result<PathBuf> {
+    fn backup_model_catalog(&self, path: &Path, bytes: &[u8]) -> Result<PathBuf> {
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let parent = path.parent().unwrap_or(&self.paths.home);
+        let file_name = path
+            .file_name()
+            .ok_or(Error("Invalid model catalog path."))?
+            .to_string_lossy();
         for i in 0..1000 {
             let suffix = if i == 0 {
                 String::new()
             } else {
                 format!("-{i:02}")
             };
-            let path = self
-                .paths
-                .home
-                .join(format!("models-codex.json.bak-{stamp}{suffix}"));
-            if path.exists() {
+            let backup = parent.join(format!("{file_name}.bak-{stamp}{suffix}"));
+            if backup.exists() {
                 continue;
             }
-            files::create(&path, bytes)?;
-            return Ok(path);
+            files::create(&backup, bytes)?;
+            return Ok(backup);
         }
         Err(Error("Cannot reserve a unique model catalog backup."))
     }

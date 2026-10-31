@@ -1,360 +1,236 @@
-use eframe::egui;
+//! GPUI desktop application state and asynchronous core operations.
+//!
+//! Rendering lives in [`view`]. This module owns the input entities and state
+//! transitions that may start filesystem work. Core work runs on GPUI's
+//! background executor and updates this entity only when it completes.
+
+mod catalog;
 mod format;
+mod view;
+
 #[cfg(test)]
 mod tests;
-mod ui;
 
-#[cfg(test)]
-use self::format::masked_hint;
-use self::format::{mode_name, nonempty, user_error};
-use std::{
-    path::PathBuf,
-    sync::{
-        Arc,
-        mpsc::{self, Receiver, TryRecvError},
-    },
-    thread,
-    time::Duration,
+use catalog::CatalogEditor;
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::{
+    AppContext as _, Bounds, Context, Entity, ScrollHandle, Subscription, Window, WindowBounds,
+    WindowOptions, px, rgb, size,
 };
+use rfd::AsyncFileDialog;
+use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 use switcher_core::{
-    CodexModel, ImportSources, Mode, ModelCatalog, ModelCatalogSaveResult, Paths, PreparedSwitch,
-    ReasoningLevel, Status, Store, SwitchOptions, SwitchResult, config,
+    ImportSources, Mode, Paths, PreparedSwitch, Status, Store, SwitchOptions, config,
 };
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 type CoreResult<T> = switcher_core::Result<T>;
+type DialogFuture = Pin<Box<dyn Future<Output = Option<PathBuf>> + Send + 'static>>;
 
+/// File dialogs are injected so the UI tests can use deterministic, isolated paths.
 #[derive(Clone)]
-struct FileDialogs {
-    pick_file: Arc<dyn Fn(bool) -> Option<PathBuf> + Send + Sync>,
-    pick_folder: Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>,
+pub(crate) struct FileDialogs {
+    pub(crate) pick_file: Arc<dyn Fn(bool) -> DialogFuture + Send + Sync>,
+    pub(crate) pick_folder: Arc<dyn Fn() -> DialogFuture + Send + Sync>,
 }
 
 impl FileDialogs {
     fn system() -> Self {
         Self {
             pick_file: Arc::new(|auth| {
-                let dialog = rfd::FileDialog::new().set_title(if auth {
-                    "导入认证 JSON"
-                } else {
-                    "导入模式 TOML"
-                });
-                if auth {
-                    dialog.add_filter("JSON", &["json"]).pick_file()
-                } else {
-                    dialog.add_filter("TOML", &["toml"]).pick_file()
-                }
+                Box::pin(async move {
+                    let dialog = AsyncFileDialog::new().set_title(if auth {
+                        "导入认证 JSON"
+                    } else {
+                        "导入模式 TOML"
+                    });
+                    let file = if auth {
+                        dialog.add_filter("JSON", &["json"]).pick_file().await
+                    } else {
+                        dialog.add_filter("TOML", &["toml"]).pick_file().await
+                    };
+                    file.map(|file| file.path().to_path_buf())
+                })
             }),
             pick_folder: Arc::new(|| {
-                rfd::FileDialog::new()
-                    .set_title("选择 Codex 配置目录")
-                    .pick_folder()
+                Box::pin(async move {
+                    AsyncFileDialog::new()
+                        .set_title("选择 Codex 配置目录")
+                        .pick_folder()
+                        .await
+                        .map(|folder| folder.path().to_path_buf())
+                })
             }),
         }
     }
 }
 
-enum WorkerOutput {
-    Status(CoreResult<Status>),
-    Prepared(CoreResult<PreparedSwitch>),
-    Applied(CoreResult<(SwitchResult, CoreResult<Status>)>),
-    CatalogLoaded(CoreResult<ModelCatalog>),
-    CatalogSaved(CoreResult<(ModelCatalog, ModelCatalogSaveResult)>),
-    PickFile {
-        auth: bool,
-        target: Mode,
-        path: Option<PathBuf>,
-    },
-    PickFolder(Option<PathBuf>),
-    Restarted(CoreResult<()>),
+/// Which main tab is visible in the single application window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MainTab {
+    Switch,
+    Models,
 }
 
-/// Keeps file and crypto work on a worker thread while the egui event loop stays responsive.
-struct SwitcherApp {
-    store: Store,
-    dialogs: FileDialogs,
-    target: Mode,
-    status: Option<Status>,
-    prepared: Option<PreparedSwitch>,
-    model_catalog: Option<ModelCatalog>,
-    selected_model: usize,
-    reasoning_levels_text: String,
-    catalog_dirty: bool,
-    catalog_window_open: bool,
-    restart_confirmation_open: bool,
-    restart_needed: bool,
-    directory: String,
-    directory_needs_refresh: bool,
-    subscription_provider: String,
-    api_provider: String,
-    endpoint: String,
-    key: Zeroizing<String>,
-    key_epoch: u64,
-    busy: bool,
-    message: String,
-    error: bool,
-    worker: Option<Receiver<WorkerOutput>>,
+/// The one GPUI entity backing the application window.
+pub(crate) struct Switcher {
+    pub(crate) store: Store,
+    pub(crate) file_dialogs: FileDialogs,
+    pub(crate) target: Mode,
+    pub(crate) tab: MainTab,
+    pub(crate) status: Option<Status>,
+    pub(crate) prepared: Option<PreparedSwitch>,
+    pub(crate) directory: Entity<InputState>,
+    pub(crate) subscription_provider: Entity<InputState>,
+    pub(crate) api_provider: Entity<InputState>,
+    pub(crate) endpoint: Entity<InputState>,
+    pub(crate) key: Entity<InputState>,
+    pub(crate) key_subscription: Option<Subscription>,
+    _input_subscriptions: Vec<Subscription>,
+    pub(crate) busy: bool,
+    pub(crate) message: String,
+    pub(crate) error: bool,
+    pub(crate) directory_needs_refresh: bool,
+    pub(crate) restart_needed: bool,
+    pub(crate) restart_confirmation_open: bool,
+    pub(crate) catalog: CatalogEditor,
+    pub(crate) switch_scroll: ScrollHandle,
+    pub(crate) catalog_scroll: ScrollHandle,
+    pub(crate) model_list_scroll: ScrollHandle,
 }
 
-impl SwitcherApp {
-    fn new(store: Store) -> Self {
-        Self::with_dialogs(store, FileDialogs::system())
+impl Switcher {
+    pub(crate) fn new(store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_dialogs(store, FileDialogs::system(), window, cx)
     }
 
-    fn with_dialogs(store: Store, dialogs: FileDialogs) -> Self {
-        let mut app = Self {
-            directory: store.paths.home.to_string_lossy().into_owned(),
+    pub(crate) fn with_dialogs(
+        store: Store,
+        file_dialogs: FileDialogs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let directory = input("Codex 配置目录", false, 4096, window, cx);
+        directory.update(cx, |state, cx| {
+            state.set_value(store.paths.home.to_string_lossy(), window, cx)
+        });
+        let subscription_provider = input("openai", false, 128, window, cx);
+        let api_provider = input("openai", false, 128, window, cx);
+        let endpoint = input(config::DEFAULT_API_BASE_URL, false, 2048, window, cx);
+        let key = input("API key", true, 16384, window, cx);
+        subscription_provider.update(cx, |state, cx| state.set_value("openai", window, cx));
+        api_provider.update(cx, |state, cx| state.set_value("openai", window, cx));
+        endpoint.update(cx, |state, cx| {
+            state.set_value(config::DEFAULT_API_BASE_URL, window, cx)
+        });
+
+        let directory_subscription = cx.subscribe(&directory, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.directory_needs_refresh = true;
+                this.status = None;
+                this.prepared = None;
+                cx.notify();
+            }
+        });
+        let mut input_subscriptions = vec![directory_subscription];
+        for field in [&subscription_provider, &api_provider, &endpoint] {
+            input_subscriptions.push(cx.subscribe(field, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.prepared = None;
+                    cx.notify();
+                }
+            }));
+        }
+        let key_subscription = Some(cx.subscribe(&key, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.prepared = None;
+                cx.notify();
+            }
+        }));
+        let catalog = CatalogEditor::new(window, cx);
+        let mut this = Self {
             store,
-            dialogs,
+            file_dialogs,
             target: Mode::Api,
+            tab: MainTab::Switch,
             status: None,
             prepared: None,
-            model_catalog: None,
-            selected_model: 0,
-            reasoning_levels_text: String::new(),
-            catalog_dirty: false,
-            catalog_window_open: false,
-            restart_confirmation_open: false,
-            restart_needed: false,
-            subscription_provider: "openai".into(),
-            api_provider: "openai".into(),
-            endpoint: config::DEFAULT_API_BASE_URL.into(),
-            directory_needs_refresh: false,
-            key: Zeroizing::new(String::new()),
-            key_epoch: 0,
+            directory,
+            subscription_provider,
+            api_provider,
+            endpoint,
+            key,
+            key_subscription,
+            _input_subscriptions: input_subscriptions,
             busy: false,
             message: String::new(),
             error: false,
-            worker: None,
+            directory_needs_refresh: false,
+            restart_needed: false,
+            restart_confirmation_open: false,
+            catalog,
+            switch_scroll: ScrollHandle::default(),
+            catalog_scroll: ScrollHandle::default(),
+            model_list_scroll: ScrollHandle::default(),
         };
-        app.refresh();
-        app
+        this.refresh(window, cx);
+        this
     }
 
-    fn start_work(&mut self, job: impl FnOnce(Store) -> WorkerOutput + Send + 'static) {
+    /// Schedule core work away from the UI thread, then apply the result on the
+    /// UI thread. Only one operation may be pending at a time.
+    pub(crate) fn execute<T: Send + 'static>(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        job: impl FnOnce(Store) -> CoreResult<T> + Send + 'static,
+        done: impl FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
+    ) {
         if self.busy {
             return;
         }
         self.busy = true;
         self.error = false;
         self.message = "正在处理...".into();
+        cx.notify();
         let store = self.store.clone();
-        let (sender, receiver) = mpsc::channel();
-        match thread::Builder::new()
-            .name("codex-auth-switcher-work".into())
-            .spawn(move || {
-                let _ = sender.send(job(store));
-            }) {
-            Ok(_) => self.worker = Some(receiver),
-            Err(_) => {
-                self.busy = false;
-                self.message = "无法启动后台操作。请重试。".into();
-                self.error = true;
-            }
-        }
+        let task = cx.background_executor().spawn(async move { job(store) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, move |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok(value) => done(this, value, window, cx),
+                    Err(error) => {
+                        this.message = format::user_error(&error);
+                        this.error = true;
+                        this.prepared = None;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
-    fn poll_worker(&mut self) {
-        let Some(receiver) = self.worker.take() else {
-            return;
-        };
-        match receiver.try_recv() {
-            Ok(output) => self.complete(output),
-            Err(TryRecvError::Empty) => self.worker = Some(receiver),
-            Err(TryRecvError::Disconnected) => {
-                self.busy = false;
-                self.message = "后台操作已中断。请刷新状态后重试。".into();
-                self.error = true;
-                self.prepared = None;
-            }
-        }
-    }
-
-    fn complete(&mut self, output: WorkerOutput) {
-        self.busy = false;
-        match output {
-            WorkerOutput::Status(result) => match result {
-                Ok(status) => {
-                    if self
-                        .status
-                        .as_ref()
-                        .is_some_and(|previous| !previous.config_exists)
-                        && status.config_exists
-                    {
-                        self.restart_needed = true;
-                    }
-                    self.target = if status.mode == Some(Mode::Api) {
-                        Mode::Subscription
-                    } else {
-                        Mode::Api
-                    };
-                    self.sync_profiles(&status);
-                    self.message = if !status.config_exists {
-                        "首次使用：请创建默认配置，再登录 Codex 或输入 API key。".into()
-                    } else if status.auth_mode.is_none() {
-                        "尚未登录。可输入 API key 并预览应用，或在 Codex 中完成订阅登录。".into()
-                    } else if status.initialized {
-                        "已读取本地状态".into()
-                    } else {
-                        "尚未初始化模式存档".into()
-                    };
-                    self.status = Some(status);
-                }
-                Err(error) => self.show_error(&error),
-            },
-            WorkerOutput::Prepared(result) => match result {
-                Ok(prepared) => {
-                    self.message = if prepared.preview.changed {
-                        "预览已生成，尚未写入配置".into()
-                    } else {
-                        "目标与当前配置一致".into()
-                    };
-                    if prepared.preview.auth_changes {
-                        self.message.push_str(&format!(
-                            "。认证来源：{}",
-                            format::auth_source_name(&prepared.preview.auth_source)
-                        ));
-                    }
-                    self.prepared = Some(prepared);
-                }
-                Err(error) => self.show_error(&error),
-            },
-            WorkerOutput::Applied(result) => match result {
-                Ok((applied, status)) => {
-                    self.restart_needed |= applied.restart_required;
-                    self.clear_key();
-                    self.message = if applied.changed {
-                        format!(
-                            "已切换到 {}。重启 Codex 后请新建会话。",
-                            mode_name(applied.target)
-                        )
-                    } else {
-                        "配置未变化".into()
-                    };
-                    match applied.environment_persisted {
-                        Some(true) => {
-                            self.message
-                                .push_str(" API key 已保存到当前用户环境变量 AUTOCODE_API_KEY。");
-                        }
-                        Some(false) => {
-                            self.message.push_str(
-                                " 切换已完成，但无法保存当前用户环境变量 AUTOCODE_API_KEY。",
-                            );
-                            self.error = true;
-                        }
-                        None => {}
-                    }
-                    match status {
-                        Ok(status) => {
-                            self.sync_profiles(&status);
-                            self.status = Some(status);
-                        }
-                        Err(error) => {
-                            self.status = None;
-                            self.message
-                                .push_str(&format!(" 状态读取失败：{}", user_error(&error)));
-                            self.error = true;
-                        }
-                    }
-                }
-                Err(error) => {
-                    self.clear_key();
-                    self.show_error(&error);
-                }
-            },
-            WorkerOutput::CatalogLoaded(result) => match result {
-                Ok(catalog) => {
-                    self.selected_model = 0;
-                    self.reasoning_levels_text = catalog
-                        .models
-                        .first()
-                        .map(reasoning_levels_text)
-                        .unwrap_or_default();
-                    self.model_catalog = Some(catalog);
-                    self.catalog_dirty = false;
-                    self.message = "已读取 Codex 模型目录".into();
-                    self.error = false;
-                }
-                Err(error) => self.show_error(&error),
-            },
-            WorkerOutput::CatalogSaved(result) => match result {
-                Ok((catalog, saved)) => {
-                    self.restart_needed |= saved.backup.is_some();
-                    self.selected_model = self.selected_model.min(catalog.models.len() - 1);
-                    self.reasoning_levels_text = catalog
-                        .models
-                        .get(self.selected_model)
-                        .map(reasoning_levels_text)
-                        .unwrap_or_default();
-                    self.model_catalog = Some(catalog);
-                    self.catalog_dirty = false;
-                    self.message = match saved.backup {
-                        Some(backup) => {
-                            format!("已保存 {} 个模型选项。备份：{}", saved.model_count, backup)
-                        }
-                        None => "模型目录没有变化".into(),
-                    };
-                    self.error = false;
-                }
-                Err(error) => self.show_error(&error),
-            },
-            WorkerOutput::PickFile { auth, target, path } => {
-                if let Some(path) = path {
-                    let mut sources = ImportSources::default();
-                    match (target, auth) {
-                        (Mode::Subscription, false) => sources.subscription_config = Some(path),
-                        (Mode::Subscription, true) => sources.subscription_auth = Some(path),
-                        (Mode::Api, false) => sources.api_config = Some(path),
-                        (Mode::Api, true) => sources.api_auth = Some(path),
-                    }
-                    self.initialize(sources);
-                } else {
-                    self.message = "文件选择已取消，未修改本地文件。".into();
-                }
-            }
-            WorkerOutput::PickFolder(path) => {
-                if let Some(path) = path {
-                    self.clear_key();
-                    self.directory = path.to_string_lossy().into_owned();
-                    self.refresh();
-                } else {
-                    self.message = "目录选择已取消，未修改本地文件。".into();
-                }
-            }
-            WorkerOutput::Restarted(result) => match result {
-                Ok(()) => {
-                    self.restart_needed = false;
-                    self.message = "Codex 桌面应用已重启。请新建会话以使用最新配置。".into();
-                }
-                Err(error) => self.show_error(&error),
-            },
-        }
-    }
-
-    fn show_error(&mut self, error: &switcher_core::Error) {
-        self.message = user_error(error);
-        self.error = true;
-        self.prepared = None;
-    }
-
-    fn select_directory(&mut self) -> bool {
-        if self.directory.trim().is_empty() {
+    pub(crate) fn select_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let home = self.directory.read(cx).value();
+        if home.trim().is_empty() {
             self.message = "请选择 Codex 配置目录".into();
             self.error = true;
+            cx.notify();
             return false;
         }
-        match Paths::resolve(Some(PathBuf::from(self.directory.trim()))) {
+        match Paths::resolve(Some(PathBuf::from(home.trim()))) {
             Ok(paths) => {
+                if paths.home != self.store.paths.home && self.catalog.dirty {
+                    self.message = "请先保存或放弃当前模型目录改动，再选择其他配置目录。".into();
+                    self.error = true;
+                    cx.notify();
+                    return false;
+                }
                 if paths.home != self.store.paths.home {
-                    if self.catalog_dirty {
-                        self.message =
-                            "请先保存或放弃当前模型目录改动，再选择其他配置目录。".into();
-                        self.error = true;
-                        return false;
-                    }
-                    self.model_catalog = None;
-                    self.reasoning_levels_text.clear();
-                    self.selected_model = 0;
+                    self.catalog.clear_loaded(window, cx);
                     self.status = None;
                 }
                 self.store = self.store.with_paths(paths);
@@ -362,171 +238,224 @@ impl SwitcherApp {
                 true
             }
             Err(error) => {
-                self.show_error(&error);
+                self.message = format::user_error(&error);
+                self.error = true;
+                cx.notify();
                 false
             }
         }
     }
 
-    fn sync_profiles(&mut self, status: &Status) {
+    pub(crate) fn sync_profiles(
+        &mut self,
+        status: &Status,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(profile) = status
             .modes
             .iter()
             .find(|profile| profile.mode == Mode::Subscription)
         {
-            self.subscription_provider.clone_from(&profile.provider);
+            let provider = profile.provider.clone();
+            self.subscription_provider
+                .update(cx, |state, cx| state.set_value(provider, window, cx));
         }
         if let Some(profile) = status
             .modes
             .iter()
             .find(|profile| profile.mode == Mode::Api)
         {
-            self.api_provider.clone_from(&profile.provider);
-            self.endpoint.clone_from(&profile.base_url);
+            let provider = profile.provider.clone();
+            let endpoint = profile.base_url.clone();
+            self.api_provider
+                .update(cx, |state, cx| state.set_value(provider, window, cx));
+            self.endpoint
+                .update(cx, |state, cx| state.set_value(endpoint, window, cx));
         }
     }
 
-    fn refresh(&mut self) {
+    pub(crate) fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.prepared = None;
-        if !self.select_directory() {
+        if self.catalog.dirty {
+            self.message = "请先保存或放弃模型目录改动，再刷新状态。".into();
+            self.error = true;
+            cx.notify();
+            return;
+        }
+        if !self.select_directory(window, cx) {
             return;
         }
         self.status = None;
-        self.start_work(|store| WorkerOutput::Status(store.status()));
+        self.execute(
+            window,
+            cx,
+            |store| store.status(),
+            |this, status, window, cx| {
+                this.target = if status.mode == Some(Mode::Api) {
+                    Mode::Subscription
+                } else {
+                    Mode::Api
+                };
+                this.sync_profiles(&status, window, cx);
+                this.message = if !status.config_exists {
+                    "首次使用：请创建默认配置，再登录 Codex 或输入 API key。"
+                } else if status.initialized {
+                    "已读取本地状态"
+                } else {
+                    "尚未初始化模式存档"
+                }
+                .into();
+                this.directory_needs_refresh = false;
+                this.status = Some(status);
+            },
+        );
     }
 
-    fn initialize(&mut self, sources: ImportSources) {
+    pub(crate) fn initialize(
+        &mut self,
+        sources: ImportSources,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.prepared = None;
-        if !self.select_directory() {
+        if !self.select_directory(window, cx) {
             return;
         }
-        self.start_work(move |store| WorkerOutput::Status(store.initialize(sources)));
+        self.execute(
+            window,
+            cx,
+            move |store| store.initialize(sources),
+            |this, status, window, cx| {
+                let config_was_missing = this
+                    .status
+                    .as_ref()
+                    .is_some_and(|previous| !previous.config_exists);
+                this.restart_needed |= config_was_missing && status.config_exists;
+                this.sync_profiles(&status, window, cx);
+                this.status = Some(status);
+                this.message = "模式存档已更新，当前认证未切换".into();
+            },
+        );
     }
 
-    fn preview(&mut self) {
+    pub(crate) fn preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.directory_needs_refresh {
             self.message = "配置目录已修改，请先刷新状态后再预览。".into();
             self.error = true;
+            cx.notify();
             return;
         }
         self.prepared = None;
-        if !self.select_directory() {
+        if !self.select_directory(window, cx) {
             return;
         }
         let provider = if self.target == Mode::Api {
-            nonempty(&self.api_provider)
+            self.api_provider.read(cx).value().to_string()
         } else {
-            nonempty(&self.subscription_provider)
+            self.subscription_provider.read(cx).value().to_string()
         };
         let options = if self.target == Mode::Api {
             SwitchOptions {
-                provider,
-                base_url: nonempty(&self.endpoint),
-                api_key: nonempty(&self.key).map(Zeroizing::new),
+                provider: format::nonempty(&provider),
+                base_url: format::nonempty(self.endpoint.read(cx).value().as_ref()),
+                api_key: format::nonempty(self.key.read(cx).value().as_ref()).map(Zeroizing::new),
             }
         } else {
             SwitchOptions {
-                provider,
+                provider: format::nonempty(&provider),
                 ..Default::default()
             }
         };
         let target = self.target;
-        self.start_work(move |store| WorkerOutput::Prepared(store.prepare(target, options)));
+        self.execute(
+            window,
+            cx,
+            move |store| store.prepare(target, options),
+            |this, prepared, _, _| {
+                this.message = if prepared.preview.changed {
+                    "预览已生成，尚未写入配置"
+                } else {
+                    "目标与当前配置一致"
+                }
+                .into();
+                this.prepared = Some(prepared);
+            },
+        );
     }
 
-    fn load_model_catalog(&mut self) {
-        if self.catalog_dirty {
-            self.message = "有未保存的模型目录改动。请先保存，再重新读取。".into();
-            self.error = true;
-            return;
-        }
-        if !self.select_directory() {
-            return;
-        }
-        self.start_work(|store| WorkerOutput::CatalogLoaded(store.load_model_catalog()));
-    }
-
-    fn save_model_catalog(&mut self) {
-        let Some(catalog) = self.model_catalog.clone() else {
-            return;
-        };
-        self.start_work(move |store| WorkerOutput::CatalogSaved(store.save_model_catalog(catalog)));
-    }
-
-    fn add_model_from_selected(&mut self) {
-        let Some(catalog) = self.model_catalog.as_mut() else {
-            return;
-        };
-        let Some(template) = catalog
-            .models
-            .get(self.selected_model)
-            .or_else(|| catalog.models.first())
-            .cloned()
-        else {
-            return;
-        };
-        let mut model: CodexModel = template;
-        let base = "new-model";
-        let mut suffix = 1usize;
-        while catalog
-            .models
-            .iter()
-            .any(|item| item.slug == format!("{base}-{suffix}"))
-        {
-            suffix += 1;
-        }
-        model.slug = format!("{base}-{suffix}");
-        model.display_name = "新模型".into();
-        model.priority = catalog
-            .models
-            .iter()
-            .map(|item| item.priority)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        self.reasoning_levels_text = reasoning_levels_text(&model);
-        catalog.models.push(model);
-        self.selected_model = catalog.models.len() - 1;
-        self.catalog_dirty = true;
-        self.message = "已添加模型条目。请修改模型 ID 和名称，并确认复制来的能力参数。".into();
-        self.error = false;
-    }
-
-    fn discard_model_catalog(&mut self) {
-        self.model_catalog = None;
-        self.selected_model = 0;
-        self.reasoning_levels_text.clear();
-        self.catalog_dirty = false;
-        self.message = "已放弃模型目录改动。重新读取后可继续编辑。".into();
-        self.error = false;
-    }
-
-    fn apply(&mut self) {
+    pub(crate) fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(prepared) = self.prepared.take() else {
             return;
         };
-        self.start_work(move |store| {
-            WorkerOutput::Applied(store.apply(prepared).map(|applied| {
-                let status = store.status();
-                (applied, status)
-            }))
-        });
+        self.execute(
+            window,
+            cx,
+            move |store| Ok(store.apply(prepared).map(|result| (result, store.status()))),
+            |this, result, window, cx| {
+                this.clear_key(window, cx);
+                match result {
+                    Ok((result, status)) => {
+                        this.restart_needed |= result.restart_required;
+                        this.message = if result.changed {
+                            format!(
+                                "已切换到 {}。重启 Codex 后请新建会话。",
+                                format::mode_name(result.target)
+                            )
+                        } else {
+                            "配置未变化".into()
+                        };
+                        if let Some(persisted) = result.environment_persisted {
+                            if persisted {
+                                this.message.push_str(
+                                    " API key 已保存到当前用户环境变量 AUTOCODE_API_KEY。",
+                                );
+                            } else {
+                                this.message.push_str(
+                                    " 切换已完成，但无法保存当前用户环境变量 AUTOCODE_API_KEY。",
+                                );
+                                this.error = true;
+                            }
+                        }
+                        match status {
+                            Ok(status) => {
+                                this.sync_profiles(&status, window, cx);
+                                this.status = Some(status);
+                            }
+                            Err(error) => {
+                                this.status = None;
+                                this.message.push_str(&format!(
+                                    " 状态读取失败：{}",
+                                    format::user_error(&error)
+                                ));
+                                this.error = true;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        this.message = format::user_error(&error);
+                        this.error = true;
+                        this.prepared = None;
+                    }
+                }
+            },
+        );
     }
 
-    fn restart_codex(&mut self) {
-        self.restart_confirmation_open = false;
-        self.start_work(|_| WorkerOutput::Restarted(crate::restart::restart()));
-        self.message = "正在关闭并重新启动 Codex 桌面应用...".into();
+    /// Clear the displayed value and replace its entity to release edit history.
+    pub(crate) fn clear_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.key
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.key = input("API key", true, 16384, window, cx);
+        self.key_subscription = Some(cx.subscribe(&self.key, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.prepared = None;
+                cx.notify();
+            }
+        }));
     }
 
-    fn clear_key(&mut self) {
-        self.key.zeroize();
-        self.key = Zeroizing::new(String::new());
-        self.key_epoch = self.key_epoch.wrapping_add(1);
-        self.prepared = None;
-    }
-
-    fn pick_file(&mut self, auth: bool) {
+    pub(crate) fn import(&mut self, auth: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -534,95 +463,148 @@ impl SwitcherApp {
         self.busy = true;
         self.error = false;
         self.message = "正在打开文件选择器...".into();
-        let picker = self.dialogs.pick_file.clone();
+        cx.notify();
         let target = self.target;
-        let (sender, receiver) = mpsc::channel();
-        match thread::Builder::new()
-            .name("codex-auth-switcher-file-dialog".into())
-            .spawn(move || {
-                let _ = sender.send(WorkerOutput::PickFile {
-                    auth,
-                    target,
-                    path: picker(auth),
-                });
-            }) {
-            Ok(_) => self.worker = Some(receiver),
-            Err(_) => {
-                self.busy = false;
-                self.message = "无法打开文件选择器。请重试。".into();
-                self.error = true;
-            }
-        }
+        let picker = self.file_dialogs.pick_file.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let selected = picker(auth).await;
+            let _ = this.update_in(cx, move |this, window, cx| {
+                this.busy = false;
+                if let Some(path) = selected {
+                    let mut sources = ImportSources::default();
+                    match (target, auth) {
+                        (Mode::Subscription, false) => sources.subscription_config = Some(path),
+                        (Mode::Subscription, true) => sources.subscription_auth = Some(path),
+                        (Mode::Api, false) => sources.api_config = Some(path),
+                        (Mode::Api, true) => sources.api_auth = Some(path),
+                    }
+                    this.initialize(sources, window, cx);
+                } else {
+                    this.message = "文件选择已取消，未修改本地文件。".into();
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
-    fn pick_folder(&mut self) {
-        if self.busy {
-            return;
-        }
-        if self.catalog_dirty {
-            self.message = "请先保存模型目录改动，再选择其他配置目录。".into();
-            self.error = true;
+    pub(crate) fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.catalog.dirty {
             return;
         }
         self.prepared = None;
         self.busy = true;
         self.error = false;
         self.message = "正在打开目录选择器...".into();
-        let picker = self.dialogs.pick_folder.clone();
-        let (sender, receiver) = mpsc::channel();
-        match thread::Builder::new()
-            .name("codex-auth-switcher-folder-dialog".into())
-            .spawn(move || {
-                let _ = sender.send(WorkerOutput::PickFolder(picker()));
-            }) {
-            Ok(_) => self.worker = Some(receiver),
-            Err(_) => {
-                self.busy = false;
-                self.message = "无法打开目录选择器。请重试。".into();
-                self.error = true;
+        cx.notify();
+        let picker = self.file_dialogs.pick_folder.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let selected = picker().await;
+            let _ = this.update_in(cx, move |this, window, cx| {
+                this.busy = false;
+                if let Some(path) = selected {
+                    this.clear_key(window, cx);
+                    this.directory.update(cx, |state, cx| {
+                        state.set_value(path.to_string_lossy(), window, cx)
+                    });
+                    this.refresh(window, cx);
+                } else {
+                    this.message = "目录选择已取消，未修改本地文件。".into();
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let allowed = crate::restart::supported()
+            && !self.busy
+            && !self.catalog.dirty
+            && !self.directory_needs_refresh
+            && self.key.read(cx).value().is_empty()
+            && self
+                .prepared
+                .as_ref()
+                .is_none_or(|prepared| !prepared.preview.changed)
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|status| status.config_exists && !status.recovery_pending);
+        if !allowed {
+            return;
+        }
+        self.restart_confirmation_open = false;
+        self.execute(
+            window,
+            cx,
+            |_| crate::restart::restart(),
+            |this, (), _, _| {
+                this.restart_needed = false;
+                this.message = "Codex 桌面应用已重启。请新建会话以使用最新配置。".into();
+            },
+        );
+    }
+}
+
+fn input(
+    placeholder: impl Into<gpui_kit::SharedString>,
+    masked: bool,
+    limit: usize,
+    window: &mut Window,
+    cx: &mut Context<Switcher>,
+) -> Entity<InputState> {
+    cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder(placeholder)
+            .masked(masked)
+            .validate(move |value, _| value.chars().count() <= limit)
+    })
+}
+
+pub(crate) fn run(store: Store) -> anyhow::Result<()> {
+    let icon = std::sync::Arc::new(
+        image::load_from_memory(include_bytes!("../assets/codex-auth-switcher.png"))?.to_rgba8(),
+    );
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Light, None, cx);
+            let theme = gpui_kit::component::Theme::global_mut(cx);
+            theme.primary = rgb(0x167454).into();
+            theme.primary_hover = rgb(0x126247).into();
+            theme.primary_active = rgb(0x0f513b).into();
+            theme.tokens = (&theme.colors).into();
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1040.), px(740.)),
+                    cx,
+                ))),
+                window_min_size: Some(size(px(720.), px(560.))),
+                titlebar: Some(gpui_kit::TitlebarOptions {
+                    title: Some("Codex Auth Switcher".into()),
+                    ..Default::default()
+                }),
+                icon: Some(icon),
+                ..Default::default()
+            };
+            if gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| Switcher::new(store, window, cx))
+            })
+            .is_err()
+            {
+                eprintln!("Cannot open the GPUI Kit window.");
+                cx.quit();
             }
-        }
-    }
-}
-
-fn reasoning_levels_text(model: &CodexModel) -> String {
-    model
-        .supported_reasoning_levels
-        .iter()
-        .map(|level| level.effort.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-impl eframe::App for SwitcherApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_worker();
-        if self.busy {
-            ctx.request_repaint_after(Duration::from_millis(50));
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| self.run_ui(ui));
-    }
-}
-
-pub fn run(store: Store) -> anyhow::Result<()> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Codex Auth Switcher v2")
-            .with_inner_size([920.0, 640.0])
-            .with_min_inner_size([720.0, 560.0]),
-        renderer: eframe::Renderer::Wgpu,
-        ..Default::default()
-    };
-    eframe::run_native(
-        "Codex Auth Switcher v2",
-        options,
-        Box::new(move |creation| {
-            creation.egui_ctx.set_visuals(egui::Visuals::light());
-            Ok(Box::new(SwitcherApp::new(store)))
-        }),
-    )
-    .map_err(|error| anyhow::anyhow!("Cannot open the egui window: {error}"))
+            cx.activate(true);
+        });
+    Ok(())
 }

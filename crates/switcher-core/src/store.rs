@@ -7,6 +7,7 @@ use crate::{
 };
 mod catalog;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use catalog::configured_model_catalog_path;
 pub use catalog::{CodexModel, ModelCatalog, ModelCatalogSaveResult, ReasoningLevel};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -805,56 +806,44 @@ impl Store {
         let Some(model) = doc.get("model").and_then(Item::as_str) else {
             return Ok(());
         };
-        let explicit = doc.get("model_catalog_json").and_then(Item::as_str);
-        let candidates = explicit
-            .map(|s| vec![self.paths.home.join(s)])
-            .unwrap_or_else(|| {
-                ["models_cache.json", "models-codex.json", "models.json"]
+        let Some(path) = configured_model_catalog_path(doc, &self.paths.home)? else {
+            // Codex may use an internal/default catalog when the setting is
+            // absent. Do not infer a filename owned by another installation.
+            return Ok(());
+        };
+        let Some(bytes) = files::read(&path, files::CONFIG_LIMIT)? else {
+            return Err(Error("Target model catalog is missing."));
+        };
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| Error("Invalid local model catalog."))?;
+        let models = json
+            .get("models")
+            .or(Some(&json))
+            .and_then(serde_json::Value::as_array)
+            .ok_or(Error("Invalid local model list."))?;
+        if let Some(entry) = models.iter().find(|e| {
+            e.get("slug")
+                .or_else(|| e.get("id"))
+                .and_then(serde_json::Value::as_str)
+                == Some(model)
+        }) {
+            if let (Some(effort), Some(levels)) = (
+                doc.get("model_reasoning_effort").and_then(Item::as_str),
+                entry
+                    .get("supported_reasoning_levels")
+                    .and_then(serde_json::Value::as_array),
+            ) && !levels.is_empty()
+                && !levels
                     .iter()
-                    .map(|s| self.paths.home.join(s))
-                    .collect()
-            });
-        for path in candidates {
-            let Some(bytes) = files::read(&path, files::CONFIG_LIMIT)? else {
-                if explicit.is_some() {
-                    return Err(Error("Target model catalog is missing."));
-                }
-                continue;
-            };
-            let json: serde_json::Value = serde_json::from_slice(&bytes)
-                .map_err(|_| Error("Invalid local model catalog."))?;
-            let models = json
-                .get("models")
-                .or(Some(&json))
-                .and_then(serde_json::Value::as_array)
-                .ok_or(Error("Invalid local model list."))?;
-            if let Some(entry) = models.iter().find(|e| {
-                e.get("slug")
-                    .or_else(|| e.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some(model)
-            }) {
-                if let (Some(effort), Some(levels)) = (
-                    doc.get("model_reasoning_effort").and_then(Item::as_str),
-                    entry
-                        .get("supported_reasoning_levels")
-                        .and_then(serde_json::Value::as_array),
-                ) && !levels.is_empty()
-                    && !levels
-                        .iter()
-                        .any(|v| v.get("effort").unwrap_or(v).as_str() == Some(effort))
-                {
-                    return Err(Error(
-                        "Reasoning effort is not supported by the selected model.",
-                    ));
-                }
-                return Ok(());
+                    .any(|v| v.get("effort").unwrap_or(v).as_str() == Some(effort))
+            {
+                return Err(Error(
+                    "Reasoning effort is not supported by the selected model.",
+                ));
             }
-            if explicit.is_some() {
-                return Err(Error("Target model is absent from its catalog."));
-            }
+            return Ok(());
         }
-        Ok(())
+        Err(Error("Target model is absent from its catalog."))
     }
 }
 

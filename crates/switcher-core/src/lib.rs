@@ -71,9 +71,6 @@ impl Paths {
     pub fn auth(&self) -> PathBuf {
         self.home.join("auth.json")
     }
-    pub fn models_catalog(&self) -> PathBuf {
-        self.home.join("models-codex.json")
-    }
     pub fn state(&self) -> PathBuf {
         self.home.join("auth-switcher-v2")
     }

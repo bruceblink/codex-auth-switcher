@@ -14,13 +14,16 @@ workspace = true
 
 [dependencies]
 switcher-core = { path = "../switcher-core" }
-eframe.workspace = true
+gpui-kit.workspace = true
 anyhow.workspace = true
+directories.workspace = true
+fs2.workspace = true
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
 rfd = "0.15"
 zeroize.workspace = true
 
 [dev-dependencies]
-egui_kittest = "=0.37.0"
+gpui-kit = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 tempfile.workspace = true
 
@@ -32,3 +35,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "=3.0.12"

@@ -132,11 +132,78 @@ function Wait-ForTextInput([string]$Name) {
 
 function Set-TextInputValue([string]$Name, [string]$Value) {
     $input = Wait-ForTextInput $Name
+    Bring-IntoView $input "text input $Name"
     $pattern = $input.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
     $pattern.SetValue($Value)
 }
 
-function Click-NativeButton([string]$Name, [bool]$ForceMouse = $false) {
+function Bring-IntoView(
+    [System.Windows.Automation.AutomationElement]$Element,
+    [string]$Description,
+    [bool]$ScrollToEnd = $false
+) {
+    if (-not $ScrollToEnd -and -not $Element.Current.IsOffscreen) {
+        return
+    }
+
+    if (-not $ScrollToEnd -and $Element.Current.IsOffscreen) {
+        try {
+            $scrollItem = $Element.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern)
+            $scrollItem.ScrollIntoView()
+            Start-Sleep -Milliseconds 100
+        }
+        catch {
+            # Continue with the scrollable ancestor when ScrollItemPattern is absent.
+        }
+        if (-not $Element.Current.IsOffscreen) {
+            return
+        }
+    }
+
+    # GPUI can leave an offscreen control in its UIA tree. Scroll its owning
+    # content pane before clicking, even when UIA reports the control visible.
+    $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+    $ancestor = $walker.GetParent($Element)
+    while ($null -ne $ancestor) {
+        try {
+            $scroll = $ancestor.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
+            if ($scroll.Current.VerticallyScrollable) {
+                $scroll.SetScrollPercent($scroll.Current.HorizontalScrollPercent, 100.0)
+                Start-Sleep -Milliseconds 100
+                return
+            }
+        }
+        catch {
+            # Continue walking toward the native window.
+        }
+        $ancestor = $walker.GetParent($ancestor)
+    }
+
+    if ($ScrollToEnd) {
+        $window = Get-MainWindow
+        if ($null -eq $window) {
+            throw "The native GUI window is unavailable while scrolling to '$Description'."
+        }
+        $bounds = $window.Current.BoundingRectangle
+        $x = [int][Math]::Round($bounds.X + $bounds.Width / 2)
+        $y = [int][Math]::Round($bounds.Y + $bounds.Height / 2)
+        if (-not [NativeUiInput]::SetCursorPos($x, $y)) {
+            throw "The native GUI content could not be scrolled to '$Description'."
+        }
+        $wheelDeltaDown = [uint32]([uint32]::MaxValue - 119)
+        for ($index = 0; $index -lt 5; $index++) {
+            [NativeUiInput]::mouse_event(0x0800, 0, 0, $wheelDeltaDown, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 40
+        }
+        Start-Sleep -Milliseconds 150
+    }
+
+    if ($Element.Current.IsOffscreen) {
+        throw "The native GUI element '$Description' is offscreen and could not be scrolled into view."
+    }
+}
+
+function Click-NativeButton([string]$Name) {
     $button = Wait-ForButton $Name
     $window = Get-MainWindow
     $windowHandle = [IntPtr]$window.Current.NativeWindowHandle
@@ -145,19 +212,7 @@ function Click-NativeButton([string]$Name, [bool]$ForceMouse = $false) {
     $null = [NativeUiInput]::SetForegroundWindow($windowHandle)
     Start-Sleep -Milliseconds 100
     $button = Wait-ForButton $Name
-    $invokePattern = $null
-    try {
-        $invokePattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-    }
-    catch {
-        # Toggle controls may expose TogglePattern only; use native mouse input for those controls.
-    }
-    if (-not $ForceMouse -and $null -ne $invokePattern) {
-        $invokePattern.Invoke()
-        Start-Sleep -Milliseconds 100
-        return
-    }
-
+    Bring-IntoView $button "button $Name"
     try {
         $point = $button.GetClickablePoint()
         $x = [int][Math]::Round($point.X)
@@ -182,20 +237,8 @@ function Click-NativeButton([string]$Name, [bool]$ForceMouse = $false) {
 
 function Select-Target([string]$Name) {
     $button = Wait-ForButton $Name
-    try {
-        $toggle = $button.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
-        if ($toggle.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::On) {
-            $toggle.Toggle()
-            Start-Sleep -Milliseconds 100
-        }
-    }
-    catch {
-        # Some egui builds do not expose TogglePattern. The pointer path below remains the fallback.
-    }
-    # egui toggle buttons expose InvokePattern inconsistently on Windows. Use the
-    # native pointer path so the real target handler receives the click.
-    Click-NativeButton $Name $true
-    Start-Sleep -Milliseconds 200
+    Bring-IntoView $button "button $Name" $true
+    Click-NativeButton $Name
 }
 
 function Read-ActiveFiles {
@@ -340,11 +383,12 @@ public static class NativeUiInput
         throw "The packaged GUI did not create a native window."
     }
 
+    $null = Wait-ForButton "初始化模式"
     Click-NativeButton "初始化模式"
+    # The test directory starts without a mode vault. Wait for initialize to finish.
     $null = Wait-ForButton "补齐模式"
 
-    # The synthetic active profile starts in subscription mode, so switch through the real controls.
-    Select-Target "API key"
+    # The synthetic active profile is subscription, so startup selects API key as the target.
     Click-NativeButton "预览变更"
     $null = Wait-ForButton "应用切换"
     Click-NativeButton "应用切换"
@@ -371,14 +415,21 @@ public static class NativeUiInput
         throw "The native GUI did not restore subscription authentication."
     }
 
+    $catalogPath = (Join-Path $script:CodexHome "models-codex.json").Replace('\', '/')
+    $activeConfig = Get-Content -LiteralPath (Join-Path $script:CodexHome "config.toml") -Raw
+    [System.IO.File]::WriteAllText(
+        (Join-Path $script:CodexHome "config.toml"),
+        "model_catalog_json = '$catalogPath'`n$activeConfig",
+        [System.Text.UTF8Encoding]::new($false)
+    )
     Click-NativeButton "模型目录"
-    Click-NativeButton "读取 models-codex.json"
-    $null = Wait-ForButton "复制当前模型"
-    Click-NativeButton "复制当前模型"
+    Click-NativeButton "读取已配置目录"
+    $null = Wait-ForButton "复制模型"
+    Click-NativeButton "复制模型"
     Set-TextInputValue "模型 ID" "native-ui-cloned-model"
     Set-TextInputValue "显示名称" "Native UI Cloned Model"
-    Click-NativeButton "保存模型选项"
-    $null = Wait-ForButtonDisabled "保存模型选项"
+    Click-NativeButton "保存"
+    $null = Wait-ForButtonDisabled "保存"
 
     $savedCatalog = Get-Content -LiteralPath (Join-Path $script:CodexHome "models-codex.json") -Raw | ConvertFrom-Json
     if ($savedCatalog.catalog_marker -ne "native-ui-synthetic" -or

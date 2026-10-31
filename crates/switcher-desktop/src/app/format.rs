@@ -137,10 +137,24 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
         "API key is empty, too long or contains whitespace." => {
             "API key 为空、过长或包含空白字符。请检查输入。"
         }
-        "Codex models-codex.json was not found." => {
-            "当前配置目录中没有 models-codex.json。请检查 Codex 目录。"
+        "Codex model catalog path is not configured in config.toml." => {
+            "当前 config.toml 没有设置 model_catalog_json。Codex 会按实际生效的配置选择模型目录。"
         }
-        "Codex model catalog JSON is invalid." => "models-codex.json 格式无效，未修改文件。",
+        "Model catalog path must be a string." => "model_catalog_json 必须是字符串路径。",
+        "Model catalog path is invalid." => "model_catalog_json 路径无效。",
+        "Configured Codex model catalog was not found." => {
+            "config.toml 指定的模型目录不存在。请检查 model_catalog_json。"
+        }
+        "Codex model catalog JSON is invalid." => "已配置的模型目录 JSON 无效，未修改文件。",
+        "The model catalog belongs to another Codex directory." => {
+            "模型目录属于其他 Codex 配置目录。请重新读取当前目录。"
+        }
+        "Codex model catalog path changed after it was loaded. Reload before saving." => {
+            "读取模型目录后，config.toml 中的路径已变化。请重新读取后再保存。"
+        }
+        "The model catalog changed after it was loaded. Reload before saving." => {
+            "读取模型目录后文件已变化。请重新读取后再保存。"
+        }
         "Codex model catalog must contain between 1 and 512 models." => {
             "模型目录必须包含 1 到 512 个模型。"
         }
@@ -157,12 +171,6 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
         "Model reasoning levels must be valid and unique." => "推理级别格式无效或重复。",
         "The default reasoning level must be supported by its model." => {
             "默认推理级别必须包含在该模型的支持列表中。"
-        }
-        "The model catalog belongs to another Codex directory." => {
-            "此模型目录属于其他 Codex 配置目录。请重新读取。"
-        }
-        "The model catalog changed after it was loaded. Reload before saving." => {
-            "读取后模型目录已被其他程序修改。请重新读取后再保存。"
         }
         "Cannot serialize the Codex model catalog." => "无法生成模型目录文件。",
         "Cannot reserve a unique model catalog backup." => "无法创建不覆盖的模型目录备份。",
