@@ -112,7 +112,7 @@ impl SwitcherApp {
             catalog_dirty: false,
             catalog_window_open: false,
             subscription_provider: "openai".into(),
-            api_provider: "OpenAI".into(),
+            api_provider: "openai".into(),
             endpoint: config::DEFAULT_API_BASE_URL.into(),
             directory_needs_refresh: false,
             key: Zeroizing::new(String::new()),
@@ -176,7 +176,11 @@ impl SwitcherApp {
                         Mode::Api
                     };
                     self.sync_profiles(&status);
-                    self.message = if status.initialized {
+                    self.message = if !status.config_exists {
+                        "首次使用：请创建默认配置，再登录 Codex 或输入 API key。".into()
+                    } else if status.auth_mode.is_none() {
+                        "尚未登录。可输入 API key 并预览应用，或在 Codex 中完成订阅登录。".into()
+                    } else if status.initialized {
                         "已读取本地状态".into()
                     } else {
                         "尚未初始化模式存档".into()

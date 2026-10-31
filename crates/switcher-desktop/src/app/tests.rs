@@ -307,6 +307,45 @@ fn switch_actions_stay_visible_with_long_previews_at_supported_window_sizes() ->
 }
 
 #[test]
+fn first_run_creates_official_defaults_then_applies_entered_api_key() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("new-codex-home");
+    let (mut harness, app) = harness_for(
+        home.clone(),
+        FileDialogs {
+            pick_file: Arc::new(|_| None),
+            pick_folder: Arc::new(|| None),
+        },
+    );
+    wait_until_idle(&mut harness, &app);
+    assert!(!home.join("config.toml").exists());
+    assert!(!home.join("auth.json").exists());
+    click_button(&mut harness, "创建默认配置");
+    wait_until_idle(&mut harness, &app);
+    let config = fs::read_to_string(home.join("config.toml"))?;
+    assert!(config.contains("cli_auth_credentials_store"));
+    assert!(!config.contains("gateway"));
+    assert!(!home.join("auth.json").exists());
+    assert_eq!(app.borrow().api_provider, "openai");
+    assert_eq!(app.borrow().endpoint, "https://api.openai.com/v1");
+    app.borrow_mut().key = Zeroizing::new("synthetic-first-run-key".into());
+    click_button(&mut harness, "预览变更");
+    wait_until_idle(&mut harness, &app);
+    assert!(app.borrow().prepared.is_some(), "{}", app.borrow().message);
+    assert!(!home.join("auth.json").exists());
+    click_button(&mut harness, "应用切换");
+    wait_until_idle(&mut harness, &app);
+    assert_eq!(
+        app.borrow().status.as_ref().and_then(|status| status.mode),
+        Some(Mode::Api)
+    );
+    let auth = fs::read_to_string(home.join("auth.json"))?;
+    assert!(auth.contains("synthetic-first-run-key"));
+    assert!(app.borrow().key.is_empty());
+    Ok(())
+}
+
+#[test]
 fn cancelled_file_and_folder_pickers_keep_controls_responsive() {
     let temp = match tempfile::tempdir() {
         Ok(temp) => temp,

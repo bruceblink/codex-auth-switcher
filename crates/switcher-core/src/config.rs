@@ -4,7 +4,7 @@ use crate::{Error, Mode, Result};
 use serde_json::Value as Json;
 use toml_edit::{DocumentMut, Item, Table, value};
 
-pub const DEFAULT_API_BASE_URL: &str = "https://vip.auto-code.net/v1";
+pub const DEFAULT_API_BASE_URL: &str = "https://api.openai.com/v1";
 
 pub const MODE_FIELDS: &[&str] = &[
     "model_provider",
@@ -256,18 +256,28 @@ pub fn validate_profile(mode: Mode, snapshot: &str, auth: Option<&[u8]>) -> Resu
         }
     }
     if mode == Mode::Api {
-        if matches!(provider(&doc)?, "openai" | "ollama" | "lmstudio") {
+        let name = provider(&doc)?;
+        if matches!(name, "ollama" | "lmstudio") {
             return Err(Error(
                 "API gateway must use a custom provider ID, such as OpenAI.",
             ));
         }
-        let selected = table(&doc)?.ok_or(Error("The API provider table is missing."))?;
-        endpoint(
-            selected
-                .get("base_url")
-                .and_then(Item::as_str)
-                .ok_or(Error("API base URL is missing."))?,
-        )?;
+        let Some(selected) = table(&doc)? else {
+            if name == "openai" {
+                return Ok(());
+            }
+            return Err(Error("The API provider table is missing."));
+        };
+        let url = selected
+            .get("base_url")
+            .and_then(Item::as_str)
+            .unwrap_or(DEFAULT_API_BASE_URL);
+        endpoint(url)?;
+        if name == "openai" && url != DEFAULT_API_BASE_URL {
+            return Err(Error(
+                "A custom API base URL requires a custom provider ID. The built-in openai provider uses the official endpoint.",
+            ));
+        }
         if selected.get("requires_openai_auth").and_then(Item::as_bool) != Some(true) {
             return Err(Error(
                 "API provider must read authentication from auth.json.",

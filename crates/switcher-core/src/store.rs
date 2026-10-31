@@ -17,6 +17,8 @@ use std::{
 use toml_edit::{DocumentMut, Item, Table, value};
 use zeroize::Zeroizing;
 
+const MINIMAL_CONFIG: &str = "cli_auth_credentials_store = \"file\"\n";
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Profile {
     config: String,
@@ -73,6 +75,7 @@ pub struct ModeStatus {
 #[derive(Clone, Serialize)]
 pub struct Status {
     pub config_path: String,
+    pub config_exists: bool,
     pub mode: Option<Mode>,
     pub auth_mode: Option<Mode>,
     pub provider: String,
@@ -293,8 +296,16 @@ impl Store {
     }
 
     pub fn status(&self) -> Result<Status> {
-        let active = self.active()?;
-        let doc = config::parse(&active.config)?;
+        let config_bytes = files::read(&self.paths.config(), files::CONFIG_LIMIT)?;
+        let config_exists = config_bytes.is_some();
+        let auth = files::read(&self.paths.auth(), files::AUTH_LIMIT)?;
+        let active_config = config_bytes.unwrap_or_default();
+        let doc = config::parse(&active_config)?;
+        let mode = if config_exists {
+            Self::kind(&active_config, auth.as_deref())?
+        } else {
+            None
+        };
         let state = if self.paths.vault().exists() {
             self.state(&Cipher::open(&self.paths, false)?)?.0
         } else {
@@ -317,7 +328,7 @@ impl Store {
                 context_window: config::summary(&snapshot, "model_context_window")?,
                 verbosity: config::summary(&snapshot, "model_verbosity")?,
                 service_tier: config::summary(&snapshot, "service_tier")?,
-                base_url: base_url(&snapshot)?,
+                base_url: base_url(&snapshot, Some(mode))?,
                 ready: issue.is_empty(),
                 issue,
                 config_source: profile.config_source,
@@ -326,15 +337,16 @@ impl Store {
         }
         Ok(Status {
             config_path: self.paths.config().to_string_lossy().into(),
-            mode: Self::kind(&active.config, active.auth.as_deref())?,
-            auth_mode: config::auth_mode(active.auth.as_deref())?,
+            config_exists,
+            mode,
+            auth_mode: config::auth_mode(auth.as_deref())?,
             provider: config::provider(&doc)?.into(),
             model: config::summary(&doc, "model")?,
             effort: config::summary(&doc, "model_reasoning_effort")?,
             context_window: config::summary(&doc, "model_context_window")?,
             verbosity: config::summary(&doc, "model_verbosity")?,
             service_tier: config::summary(&doc, "service_tier")?,
-            base_url: base_url(&doc)?,
+            base_url: base_url(&doc, mode)?,
             initialized: self.paths.vault().exists(),
             recovery_pending: self.paths.journal().exists(),
             modes,
@@ -346,6 +358,9 @@ impl Store {
         self.legacy_pending()?;
         if self.paths.journal().exists() {
             self.recover(&Cipher::open(&self.paths, false)?)?;
+        }
+        if files::read(&self.paths.config(), files::CONFIG_LIMIT)?.is_none() {
+            files::create(&self.paths.config(), MINIMAL_CONFIG.as_bytes())?;
         }
         let active = self.active()?;
         let doc = config::parse(&active.config)?;
@@ -405,12 +420,7 @@ impl Store {
                 }
             }
             if mode == Mode::Api && profile.config.is_empty() {
-                profile.config = api_template(
-                    &doc,
-                    self.environment("AUTOCODE_BASE_URL")?
-                        .as_deref()
-                        .map(String::as_str),
-                )?;
+                profile.config = api_template(&doc)?;
                 profile.config_source = "default API parameters".into();
             }
             if source_auth.is_some() || profile.auth.is_none() {
@@ -483,30 +493,37 @@ impl Store {
         let before = self.active()?;
         let current = config::parse(&before.config)?;
         Self::file_auth(&current)?;
-        let leaving = Self::kind(&before.config, before.auth.as_deref())?.ok_or(Error(
-            "Current authentication is missing. Import valid authentication first.",
-        ))?;
-        if config::auth_mode(before.auth.as_deref())? != Some(leaving) {
-            return Err(Error("Current provider and authentication do not match."));
-        }
+        let leaving = if before.auth.is_some() {
+            let leaving = Self::kind(&before.config, before.auth.as_deref())?.ok_or(Error(
+                "Current authentication is invalid. Import valid authentication first.",
+            ))?;
+            if config::auth_mode(before.auth.as_deref())? != Some(leaving) {
+                return Err(Error("Current provider and authentication do not match."));
+            }
+            Some(leaving)
+        } else {
+            None
+        };
         let cipher = Cipher::open(&self.paths, false)?;
         let (mut state, vault_before) = self.state(&cipher)?;
-        let current_fragment = config::fragment(&current)?;
-        let current_auth = before.auth.as_ref().map(|auth| STANDARD.encode(auth));
-        let preserve_imported_profile = state.profiles.get(&leaving).is_some_and(|profile| {
-            profile.config_source != "latest active config"
-                && (profile.config != current_fragment || profile.auth != current_auth)
-        });
-        if !preserve_imported_profile {
-            state.profiles.insert(
-                leaving,
-                Profile {
-                    config: current_fragment,
-                    auth: current_auth,
-                    config_source: "latest active config".into(),
-                    auth_source: "latest active authentication".into(),
-                },
-            );
+        if let Some(leaving) = leaving {
+            let current_fragment = config::fragment(&current)?;
+            let current_auth = before.auth.as_ref().map(|auth| STANDARD.encode(auth));
+            let preserve_imported_profile = state.profiles.get(&leaving).is_some_and(|profile| {
+                profile.config_source != "latest active config"
+                    && (profile.config != current_fragment || profile.auth != current_auth)
+            });
+            if !preserve_imported_profile {
+                state.profiles.insert(
+                    leaving,
+                    Profile {
+                        config: current_fragment,
+                        auth: current_auth,
+                        config_source: "latest active config".into(),
+                        auth_source: "latest active authentication".into(),
+                    },
+                );
+            }
         }
         let destination = state.profiles.get_mut(&target).ok_or(Error(
             "Target mode configuration is missing. Initialize or import its config.",
@@ -545,28 +562,54 @@ impl Store {
                 persist_api_key = Some(key);
             }
             let name = config::provider(&fragment)?.to_string();
-            let table = fragment
-                .get_mut("model_providers")
-                .and_then(Item::as_table_mut)
-                .and_then(|t| t.get_mut(&name))
-                .and_then(Item::as_table_mut)
-                .ok_or(Error("Target API provider table is missing."))?;
-            if table.contains_key("env_key") {
-                if destination.auth.is_none() {
-                    return Err(Error("API key is missing. Enter a key before switching."));
-                }
-                table.remove("env_key");
-                table.insert("requires_openai_auth", value(true));
-            }
             let env_base = self.environment("AUTOCODE_BASE_URL")?;
-            if let Some(url) = options
+            let requested_base_url = options
                 .base_url
                 .as_deref()
                 .filter(|s| !s.trim().is_empty())
-                .or(env_base.as_deref().map(String::as_str))
-            {
+                .or(env_base.as_deref().map(String::as_str));
+            if let Some(url) = requested_base_url {
                 config::endpoint(url)?;
-                table.insert("base_url", value(url));
+            }
+            let selected = config::table(&fragment)?.cloned();
+            if name == "openai" {
+                let endpoint = requested_base_url
+                    .or_else(|| {
+                        selected
+                            .as_ref()
+                            .and_then(|table| table.get("base_url"))
+                            .and_then(Item::as_str)
+                    })
+                    .unwrap_or(config::DEFAULT_API_BASE_URL);
+                if endpoint != config::DEFAULT_API_BASE_URL {
+                    return Err(Error(
+                        "A custom API base URL requires a custom provider ID. The built-in openai provider uses the official endpoint.",
+                    ));
+                }
+            }
+            if selected.is_none() && name != "openai" {
+                let endpoint = requested_base_url.unwrap_or(config::DEFAULT_API_BASE_URL);
+                fragment["model_providers"] = Item::Table(Table::new());
+                fragment["model_providers"][&name] =
+                    Item::Table(api_provider_table(&name, endpoint));
+            } else if let Some(table) = fragment
+                .get_mut("model_providers")
+                .and_then(Item::as_table_mut)
+                .and_then(|tables| tables.get_mut(&name))
+                .and_then(Item::as_table_mut)
+            {
+                if table.contains_key("env_key") {
+                    if destination.auth.is_none() {
+                        return Err(Error("API key is missing. Enter a key before switching."));
+                    }
+                    table.remove("env_key");
+                    table.insert("requires_openai_auth", value(true));
+                }
+                if let Some(url) = requested_base_url {
+                    table.insert("base_url", value(url));
+                }
+            } else if name != "openai" {
+                return Err(Error("Target API provider table is missing."));
             }
         } else if options.base_url.is_some() || api_key_was_supplied {
             return Err(Error("API input requires API mode."));
@@ -578,7 +621,7 @@ impl Store {
         let auth = decode_auth(destination.auth.as_deref())?;
         config::validate_profile(target, &destination.config, auth.as_deref())?;
         self.check_model(&fragment)?;
-        let after_config = if target == leaving
+        let after_config = if leaving == Some(target)
             && config::parse(config::fragment(&current)?.as_bytes())?.to_string()
                 == fragment.to_string()
         {
@@ -606,8 +649,8 @@ impl Store {
                 });
             }
         }
-        let old = base_url(&current)?;
-        let new = base_url(&after_doc)?;
+        let old = base_url(&current, leaving)?;
+        let new = base_url(&after_doc, Some(target))?;
         if old != new {
             changes.push(Change {
                 field: "base_url".into(),
@@ -843,10 +886,15 @@ fn profile_backup(config_bytes: &[u8]) -> Result<String> {
     Ok(fragment)
 }
 
-fn base_url(doc: &DocumentMut) -> Result<String> {
+fn base_url(doc: &DocumentMut, mode: Option<Mode>) -> Result<String> {
     let url = config::table(doc)?
         .and_then(|t| t.get("base_url"))
         .and_then(Item::as_str)
+        .or_else(|| {
+            (mode == Some(Mode::Api)
+                && config::provider(doc).is_ok_and(|provider| provider == "openai"))
+            .then_some(config::DEFAULT_API_BASE_URL)
+        })
         .unwrap_or("");
     if !url.is_empty() {
         config::endpoint(url)?;
@@ -854,28 +902,24 @@ fn base_url(doc: &DocumentMut) -> Result<String> {
     Ok(url.into())
 }
 
-fn api_template(current: &DocumentMut, endpoint: Option<&str>) -> Result<String> {
+fn api_template(current: &DocumentMut) -> Result<String> {
     let mut doc = config::parse(config::fragment(current)?.as_bytes())?;
-    doc["model_provider"] = value("OpenAI");
+    doc["model_provider"] = value("openai");
     doc.remove("model_providers");
-    let url = endpoint.unwrap_or(config::DEFAULT_API_BASE_URL);
-    config::endpoint(url)?;
-    doc["model_providers"] = Item::Table(Table::new());
-    let mut table = Table::new();
-    for (key, val) in [
-        ("name", value("API key")),
-        ("base_url", value(url)),
-        ("wire_api", value("responses")),
-        ("requires_openai_auth", value(true)),
-    ] {
-        table.insert(key, val);
-    }
-    doc["model_providers"]["OpenAI"] = Item::Table(table);
     if doc.contains_key("forced_login_method") {
         doc["forced_login_method"] = value("api");
     }
     doc.remove("forced_chatgpt_workspace_id");
     Ok(doc.to_string())
+}
+
+fn api_provider_table(name: &str, endpoint: &str) -> Table {
+    let mut table = Table::new();
+    table.insert("name", value(name));
+    table.insert("base_url", value(endpoint));
+    table.insert("wire_api", value("responses"));
+    table.insert("requires_openai_auth", value(true));
+    table
 }
 
 fn environment_key(paths: &Paths, name: &str) -> Result<Option<Zeroizing<String>>> {

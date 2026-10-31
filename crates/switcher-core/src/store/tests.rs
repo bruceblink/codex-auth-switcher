@@ -78,6 +78,303 @@ impl Data {
     }
 }
 
+fn empty_data() -> anyhow::Result<Data> {
+    let temporary = tempfile::tempdir()?;
+    let paths = Paths {
+        home: temporary.path().into(),
+    };
+    Ok(Data {
+        _temporary: temporary,
+        store: Store::isolated(paths),
+    })
+}
+
+#[test]
+fn empty_directory_status_is_read_only_and_reports_missing_config() -> anyhow::Result<()> {
+    let data = empty_data()?;
+    let status = data.store.status()?;
+    assert!(!status.config_exists);
+    assert!(!status.initialized);
+    assert_eq!(status.mode, None);
+    assert_eq!(status.auth_mode, None);
+    assert!(!data.store.paths.config().exists());
+    assert!(!data.store.paths.auth().exists());
+    assert!(!data.store.paths.state().exists());
+    Ok(())
+}
+
+#[test]
+fn empty_directory_initializes_official_profiles_without_fake_auth_or_model() -> anyhow::Result<()>
+{
+    let data = empty_data()?;
+    let status = data.initialize()?;
+    assert!(status.config_exists);
+    assert_eq!(
+        fs::read(data.store.paths.config())?,
+        MINIMAL_CONFIG.as_bytes()
+    );
+    assert!(!data.store.paths.auth().exists());
+
+    let api = status
+        .modes
+        .iter()
+        .find(|profile| profile.mode == Mode::Api)
+        .ok_or_else(|| anyhow::anyhow!("API profile is missing"))?;
+    assert_eq!(api.provider, "openai");
+    assert_eq!(api.model, "(default)");
+    assert_eq!(api.base_url, config::DEFAULT_API_BASE_URL);
+    assert!(!api.ready);
+
+    let raw = fs::read(data.store.paths.vault())?;
+    let plain = Cipher::open(&data.store.paths, false)?.decrypt("modes", &raw)?;
+    let state: serde_json::Value = serde_json::from_slice(&plain)?;
+    let encoded = state["profiles"]["api"]["config"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("API config snapshot is missing"))?;
+    let api_config = config::parse(encoded.as_bytes())?;
+    assert!(api_config.get("model").is_none());
+    assert!(api_config.get("model_providers").is_none());
+    assert!(
+        !plain
+            .windows(b"synthetic".len())
+            .any(|window| window == b"synthetic")
+    );
+    Ok(())
+}
+
+#[test]
+fn first_api_key_preview_is_read_only_and_apply_uses_builtin_openai() -> anyhow::Result<()> {
+    let mut data = empty_data()?;
+    data.initialize()?;
+    let config_before = fs::read(data.store.paths.config())?;
+    let vault_before = fs::read(data.store.paths.vault())?;
+    let prepared = data.store.prepare(
+        Mode::Api,
+        SwitchOptions {
+            api_key: Some(Zeroizing::new(KEY.into())),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(prepared.preview.auth_source, "user input");
+    assert!(prepared.preview.auth_changes);
+    assert!(!data.store.paths.auth().exists());
+    assert_eq!(config_before, fs::read(data.store.paths.config())?);
+    assert_eq!(vault_before, fs::read(data.store.paths.vault())?);
+
+    data.store.fail_after_auth = true;
+    assert!(data.store.apply(prepared).is_err());
+    data.store.fail_after_auth = false;
+    assert!(!data.store.paths.auth().exists());
+    assert!(!data.store.paths.journal().exists());
+    assert_eq!(config_before, fs::read(data.store.paths.config())?);
+    assert_eq!(vault_before, fs::read(data.store.paths.vault())?);
+
+    let prepared = data.store.prepare(
+        Mode::Api,
+        SwitchOptions {
+            api_key: Some(Zeroizing::new(KEY.into())),
+            ..Default::default()
+        },
+    )?;
+    data.store.apply(prepared)?;
+    let active = data.active()?;
+    let document = config::parse(&active.config)?;
+    assert_eq!(document["model_provider"].as_str(), Some("openai"));
+    assert!(document.get("model_providers").is_none());
+    assert_eq!(
+        document["cli_auth_credentials_store"].as_str(),
+        Some("file")
+    );
+    assert_eq!(config::auth_mode(active.auth.as_deref())?, Some(Mode::Api));
+    let status = data.store.status()?;
+    assert_eq!(status.base_url, config::DEFAULT_API_BASE_URL);
+    assert_eq!(status.mode, Some(Mode::Api));
+    Ok(())
+}
+
+#[test]
+fn imported_api_auth_completes_first_apply_without_active_auth() -> anyhow::Result<()> {
+    let data = empty_data()?;
+    data.initialize()?;
+    let imported_auth = data.store.paths.home.join("imported-api-auth.json");
+    fs::write(&imported_auth, config::api_auth(KEY)?)?;
+    let status = data.store.initialize(ImportSources {
+        api_auth: Some(imported_auth),
+        ..Default::default()
+    })?;
+    assert!(!data.store.paths.auth().exists());
+    let api = status
+        .modes
+        .iter()
+        .find(|profile| profile.mode == Mode::Api)
+        .ok_or_else(|| anyhow::anyhow!("API profile is missing"))?;
+    assert!(api.ready);
+
+    let prepared = data.store.prepare(Mode::Api, SwitchOptions::default())?;
+    assert_eq!(prepared.preview.auth_source, "imported-api-auth.json");
+    data.store.apply(prepared)?;
+    let active = data.active()?;
+    assert_eq!(config::auth_mode(active.auth.as_deref())?, Some(Mode::Api));
+    assert_eq!(data.store.status()?.mode, Some(Mode::Api));
+    Ok(())
+}
+
+#[test]
+fn repeated_initialization_does_not_replace_shared_config() -> anyhow::Result<()> {
+    let data = empty_data()?;
+    data.initialize()?;
+    let shared_config = format!(
+        "{}\n[features]\nmulti_agent = true\n",
+        fs::read_to_string(data.store.paths.config())?.trim_end()
+    );
+    fs::write(data.store.paths.config(), &shared_config)?;
+    data.initialize()?;
+    assert_eq!(
+        fs::read_to_string(data.store.paths.config())?,
+        shared_config
+    );
+    assert!(!data.store.paths.auth().exists());
+    Ok(())
+}
+
+#[test]
+fn initialization_creates_missing_config_without_replacing_existing_api_auth() -> anyhow::Result<()>
+{
+    let data = empty_data()?;
+    fs::write(data.store.paths.auth(), config::api_auth(KEY)?)?;
+    let original_auth = fs::read(data.store.paths.auth())?;
+    let status = data.initialize()?;
+    assert!(status.config_exists);
+    assert_eq!(status.mode, Some(Mode::Api));
+    assert_eq!(status.auth_mode, Some(Mode::Api));
+    assert_eq!(
+        fs::read(data.store.paths.config())?,
+        MINIMAL_CONFIG.as_bytes()
+    );
+    assert_eq!(fs::read(data.store.paths.auth())?, original_auth);
+    assert_eq!(status.base_url, config::DEFAULT_API_BASE_URL);
+    Ok(())
+}
+
+#[test]
+fn initialization_preserves_existing_config_when_auth_is_missing() -> anyhow::Result<()> {
+    let data = empty_data()?;
+    let original_config = format!("{SUBSCRIPTION}\n[features]\nmulti_agent = true\n");
+    fs::write(data.store.paths.config(), &original_config)?;
+    let original_config = fs::read(data.store.paths.config())?;
+    let status = data.store.status()?;
+    assert!(status.config_exists);
+    assert_eq!(status.mode, None);
+    assert_eq!(status.auth_mode, None);
+    let status = data.initialize()?;
+    assert_eq!(fs::read(data.store.paths.config())?, original_config);
+    assert!(!data.store.paths.auth().exists());
+    let subscription = status
+        .modes
+        .iter()
+        .find(|profile| profile.mode == Mode::Subscription)
+        .ok_or_else(|| anyhow::anyhow!("subscription profile is missing"))?;
+    assert!(subscription.config_source.is_empty());
+    assert!(subscription.auth_source.is_empty());
+    assert!(!subscription.ready);
+
+    let prepared = data.store.prepare(
+        Mode::Api,
+        SwitchOptions {
+            api_key: Some(Zeroizing::new(KEY.into())),
+            ..Default::default()
+        },
+    )?;
+    assert!(prepared.preview.auth_changes);
+    data.store.apply(prepared)?;
+    let active = data.active()?;
+    let document = config::parse(&active.config)?;
+    assert_eq!(document["features"]["multi_agent"].as_bool(), Some(true));
+    assert_eq!(config::auth_mode(active.auth.as_deref())?, Some(Mode::Api));
+    Ok(())
+}
+
+#[test]
+fn builtin_openai_override_with_subscription_auth_is_classified_as_subscription()
+-> anyhow::Result<()> {
+    let data = empty_data()?;
+    let config = r#"model_provider = "openai"
+
+[model_providers.openai]
+name = "OpenAI override"
+base_url = "https://api.openai.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+    fs::write(data.store.paths.config(), config)?;
+    fs::write(data.store.paths.auth(), SUB_AUTH)?;
+
+    let status = data.store.status()?;
+    assert_eq!(status.mode, Some(Mode::Subscription));
+    assert_eq!(status.auth_mode, Some(Mode::Subscription));
+    let status = data.initialize()?;
+    assert_eq!(status.mode, Some(Mode::Subscription));
+    let subscription = status
+        .modes
+        .iter()
+        .find(|profile| profile.mode == Mode::Subscription)
+        .ok_or_else(|| anyhow::anyhow!("subscription profile is missing"))?;
+    assert!(subscription.ready);
+    Ok(())
+}
+
+#[test]
+fn custom_api_provider_is_created_from_builtin_profile_and_existing_tables_survive()
+-> anyhow::Result<()> {
+    let data = empty_data()?;
+    data.initialize()?;
+    let endpoint = "https://gateway.example.invalid/v1";
+    let default_id = data.store.prepare(
+        Mode::Api,
+        SwitchOptions {
+            base_url: Some(endpoint.into()),
+            api_key: Some(Zeroizing::new(KEY.into())),
+            ..Default::default()
+        },
+    );
+    let error = default_id
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("built-in provider accepted a custom endpoint"))?;
+    assert!(error.to_string().contains("custom provider ID"));
+
+    let prepared = data.store.prepare(
+        Mode::Api,
+        SwitchOptions {
+            provider: Some("custom-gateway".into()),
+            base_url: Some(endpoint.into()),
+            api_key: Some(Zeroizing::new(KEY.into())),
+        },
+    )?;
+    assert_eq!(data.store.status()?.mode, None);
+    assert!(!data.store.paths.auth().exists());
+    data.store.apply(prepared)?;
+    let active = data.active()?;
+    let document = config::parse(&active.config)?;
+    let table = document["model_providers"]["custom-gateway"]
+        .as_table()
+        .ok_or_else(|| anyhow::anyhow!("custom provider table is missing"))?;
+    assert_eq!(table["base_url"].as_str(), Some(endpoint));
+    assert_eq!(table["wire_api"].as_str(), Some("responses"));
+    assert_eq!(table["requires_openai_auth"].as_bool(), Some(true));
+
+    let legacy = Data::new()?;
+    legacy.initialize()?;
+    let legacy_status = legacy.store.status()?;
+    let api = legacy_status
+        .modes
+        .iter()
+        .find(|profile| profile.mode == Mode::Api)
+        .ok_or_else(|| anyhow::anyhow!("legacy API profile is missing"))?;
+    assert_eq!(api.provider, "OpenAI");
+    assert_eq!(api.base_url, "https://gateway.example.invalid/v1");
+    Ok(())
+}
+
 #[test]
 fn initialize_imports_matching_backups_without_changing_active_files() -> anyhow::Result<()> {
     let data = Data::new()?;
@@ -434,10 +731,7 @@ fn subscription_start_works_without_profile_file() -> anyhow::Result<()> {
         ..Default::default()
     };
     data.store.apply(data.store.prepare(Mode::Api, options)?)?;
-    assert_eq!(
-        data.store.status()?.base_url,
-        "https://vip.auto-code.net/v1"
-    );
+    assert_eq!(data.store.status()?.base_url, config::DEFAULT_API_BASE_URL);
     Ok(())
 }
 

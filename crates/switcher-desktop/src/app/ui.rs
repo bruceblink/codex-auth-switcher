@@ -28,6 +28,10 @@ impl SwitcherApp {
         });
         let directory_needs_refresh = self.directory_needs_refresh;
         let enabled = !self.busy;
+        let config_missing = self
+            .status
+            .as_ref()
+            .is_some_and(|status| !status.config_exists);
 
         // Reserve the action area before laying out scrollable content. A long
         // preview must never move the apply button or its result off-screen.
@@ -109,7 +113,9 @@ impl SwitcherApp {
                     ui.strong("模式存档");
                     ui.add_space(8.0);
                     ui.weak("切换时使用对应的参数和认证");
-                    let label = if initialized {
+                    let label = if config_missing {
+                        "创建默认配置"
+                    } else if initialized {
                         "补齐模式"
                     } else {
                         "初始化模式"
@@ -135,7 +141,11 @@ impl SwitcherApp {
                         .show(ui, |ui| {
                             ui.colored_label(
                                 Color32::from_rgb(38, 91, 125),
-                                "还没有模式存档。先点击“初始化模式”，再选择目标模式并预览切换。",
+                                if config_missing {
+                                    "首次使用：创建 Codex 官方默认配置。登录前不会生成认证文件。"
+                                } else {
+                                    "还没有模式存档。先点击“初始化模式”，再选择目标模式并预览切换。"
+                                },
                             );
                         });
                 }
@@ -149,11 +159,11 @@ impl SwitcherApp {
                         .show(ui, |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 ui.weak("当前使用");
-                                ui.strong(status.mode.map(mode_name).unwrap_or("未知"));
+                                ui.strong(status.mode.map(mode_name).unwrap_or("尚未登录"));
                                 ui.label("·");
                                 ui.label(&status.provider);
                                 ui.label("·");
-                                ui.label(&status.model);
+                                ui.label(setting_value(&status.model));
                                 ui.label("·");
                                 ui.label(setting_value(&status.effort));
                             });
@@ -221,13 +231,21 @@ impl SwitcherApp {
                     .filter(|profile| !profile.ready)
                     .map(|profile| profile.issue.clone());
                 if let Some(issue) = target_issue {
+                    let missing_auth = issue == "Target authentication is missing. Import a matching auth file.";
+                    let issue = if missing_auth && self.target == Mode::Api {
+                        "尚未保存 API key。输入密钥后可预览并应用，或导入已有认证。".to_string()
+                    } else if missing_auth {
+                        "尚未保存订阅认证。请在 Codex 中完成登录，或导入订阅认证。".to_string()
+                    } else {
+                        format!("目标模式还不能切换：{issue}")
+                    };
                     egui::Frame::group(ui.style())
                         .fill(Color32::from_rgb(255, 244, 224))
                         .inner_margin(8.0)
                         .show(ui, |ui| {
                             ui.colored_label(
                                 Color32::from_rgb(142, 84, 20),
-                                format!("目标模式还不能切换：{issue}"),
+                                issue,
                             );
                         });
                 }
@@ -423,9 +441,20 @@ impl SwitcherApp {
                     });
                     if !saved.issue.is_empty() {
                         ui.add_space(4.0);
+                        let issue = if saved.issue
+                            == "Target authentication is missing. Import a matching auth file."
+                        {
+                            if mode == Mode::Api {
+                                "等待 API key"
+                            } else {
+                                "等待订阅登录"
+                            }
+                        } else {
+                            &saved.issue
+                        };
                         ui.add(
                             egui::Label::new(
-                                RichText::new(&saved.issue).color(Color32::from_rgb(163, 77, 32)),
+                                RichText::new(issue).color(Color32::from_rgb(163, 77, 32)),
                             )
                             .wrap(),
                         );

@@ -24,6 +24,7 @@ pub(super) fn auth_source_name(source: &str) -> &str {
 pub(super) fn config_source_name(source: &str) -> &str {
     match source {
         "latest active config" => "当前活动配置",
+        "default API parameters" => "官方默认 API 参数",
         source => source,
     }
 }
@@ -127,6 +128,12 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
             "Base URL 必须使用 HTTP 或 HTTPS，并包含主机名；不能包含认证信息、查询参数或片段。"
         }
         "API key is missing. Enter a key before switching." => "缺少 API key。请输入密钥后再切换。",
+        "A custom API base URL requires a custom provider ID. The built-in openai provider uses the official endpoint." => {
+            "第三方 API 地址需要自定义 Provider ID。内置 openai 只使用官方地址。"
+        }
+        "Current authentication is invalid. Import valid authentication first." => {
+            "当前认证无效。请先在 Codex 登录，或导入有效认证。"
+        }
         "API key is empty, too long or contains whitespace." => {
             "API key 为空、过长或包含空白字符。请检查输入。"
         }
