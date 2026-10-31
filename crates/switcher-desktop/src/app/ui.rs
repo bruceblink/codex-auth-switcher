@@ -337,6 +337,27 @@ impl SwitcherApp {
             });
 
         self.model_catalog_editor(ui.ctx(), enabled);
+        if self.restart_confirmation_open {
+            let response = egui::Modal::new(egui::Id::unique("restart-codex-confirmation"))
+                .show(ui.ctx(), |ui| {
+                    ui.set_width(360.0);
+                    ui.heading("确认重启 Codex");
+                    ui.label("这会关闭并重新打开 Codex 所在的桌面应用。正在生成的回复会中断，请先保存工作。");
+                    ui.label("重启不会应用尚未确认的输入。");
+                    ui.label("重启后请新建会话，以使用最新的配置。");
+                    ui.horizontal(|ui| {
+                        if ui.button("取消").clicked() {
+                            self.restart_confirmation_open = false;
+                        }
+                        if ui.button("确认重启").clicked() {
+                            self.restart_codex();
+                        }
+                    });
+                });
+            if response.should_close() {
+                self.restart_confirmation_open = false;
+            }
+        }
     }
 
     fn switch_actions(&mut self, ui: &mut egui::Ui) {
@@ -353,7 +374,34 @@ impl SwitcherApp {
                 .is_some_and(|prepared| prepared.preview.changed);
         ui.horizontal(|ui| {
             ui.strong(format!("目标：{}", mode_name(self.target)));
+            if self.restart_needed {
+                ui.colored_label(Color32::from_rgb(142, 84, 20), "等待重启");
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let can_restart = crate::restart::supported()
+                    && !self.busy
+                    && !self.catalog_dirty
+                    && !self.directory_needs_refresh
+                    && self.key.is_empty()
+                    && self
+                        .prepared
+                        .as_ref()
+                        .is_none_or(|prepared| !prepared.preview.changed)
+                    && self
+                        .status
+                        .as_ref()
+                        .is_some_and(|status| status.config_exists && !status.recovery_pending);
+                if ui
+                    .add_enabled(can_restart, egui::Button::new("重启 Codex"))
+                    .on_hover_text(if crate::restart::supported() {
+                        "关闭并重新打开 Codex 所在的桌面应用。请先保存工作。"
+                    } else {
+                        "当前系统暂不支持自动重启，请手动关闭并重新打开 Codex。"
+                    })
+                    .clicked()
+                {
+                    self.restart_confirmation_open = true;
+                }
                 if ui
                     .add_enabled(can_apply, egui::Button::new("应用切换"))
                     .clicked()

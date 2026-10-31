@@ -182,6 +182,35 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
         "Switch incomplete. Preserve pending.enc, close Codex and initialize to recover." => {
             "切换未完成。请保留 pending.enc，关闭 Codex 并执行初始化以恢复。"
         }
+        "The OpenAI Codex desktop app is not installed or could not be inspected." => {
+            "未找到已安装的 Codex 桌面应用，或无法读取安装信息。请手动重启。"
+        }
+        "The OpenAI Codex desktop package information is invalid." => {
+            "Codex 桌面应用安装信息无效。请手动重启。"
+        }
+        "Could not locate Windows PowerShell."
+        | "Could not inspect the OpenAI Codex desktop installation."
+        | "Timed out inspecting the OpenAI Codex desktop installation." => {
+            "无法读取 Codex 桌面应用的安装信息。请手动重启。"
+        }
+        "Could not inspect Codex desktop windows."
+        | "Could not inspect running Codex desktop processes." => {
+            "无法检查 Codex 桌面窗口或进程。请手动重启。"
+        }
+        "Codex is running without an open desktop window. Exit it from the system tray, then retry." => {
+            "Codex 正在后台运行且没有打开窗口。请从系统托盘退出后重试。"
+        }
+        "Could not ask Codex to close normally. Close it manually and retry."
+        | "Could not confirm that Codex closed normally." => {
+            "无法正常关闭 Codex。请保存工作后手动关闭并重新打开。"
+        }
+        "Codex did not exit within 15 seconds. Save your work, close it manually, and retry." => {
+            "Codex 在 15 秒内没有退出。请保存工作后手动关闭并重新打开。"
+        }
+        "Windows could not launch the Codex desktop app."
+        | "Codex did not open within 30 seconds. Open it manually and retry." => {
+            "无法重新打开 Codex 桌面应用。请手动打开。"
+        }
         message => return format!("操作失败：{message}"),
     };
     message.to_string()

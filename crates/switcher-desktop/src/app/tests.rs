@@ -220,6 +220,13 @@ fn controls_initialize_import_preview_and_switch_both_modes() {
             .accesskit_node()
             .is_disabled()
     );
+    #[cfg(windows)]
+    assert!(
+        !harness
+            .get_by_role_and_label(Role::Button, "重启 Codex")
+            .accesskit_node()
+            .is_disabled()
+    );
 
     click_button(&mut harness, "订阅");
     click_button(&mut harness, "预览变更");
@@ -342,6 +349,38 @@ fn first_run_creates_official_defaults_then_applies_entered_api_key() -> anyhow:
     let auth = fs::read_to_string(home.join("auth.json"))?;
     assert!(auth.contains("synthetic-first-run-key"));
     assert!(app.borrow().key.is_empty());
+    Ok(())
+}
+
+#[test]
+#[cfg(windows)]
+fn restart_requires_confirmation_and_is_blocked_by_a_pending_preview() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home)?;
+    let (mut harness, app) = harness_for(
+        home,
+        FileDialogs {
+            pick_file: Arc::new(|_| None),
+            pick_folder: Arc::new(|| None),
+        },
+    );
+    wait_until_idle(&mut harness, &app);
+    click_button(&mut harness, "初始化模式");
+    wait_until_idle(&mut harness, &app);
+    click_button(&mut harness, "重启 Codex");
+    assert!(app.borrow().restart_confirmation_open);
+    assert!(!app.borrow().busy);
+    click_button(&mut harness, "取消");
+    assert!(!app.borrow().restart_confirmation_open);
+    click_button(&mut harness, "预览变更");
+    wait_until_idle(&mut harness, &app);
+    assert!(
+        harness
+            .get_by_role_and_label(Role::Button, "重启 Codex")
+            .accesskit_node()
+            .is_disabled()
+    );
     Ok(())
 }
 

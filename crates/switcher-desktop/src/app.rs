@@ -66,6 +66,7 @@ enum WorkerOutput {
         path: Option<PathBuf>,
     },
     PickFolder(Option<PathBuf>),
+    Restarted(CoreResult<()>),
 }
 
 /// Keeps file and crypto work on a worker thread while the egui event loop stays responsive.
@@ -80,6 +81,8 @@ struct SwitcherApp {
     reasoning_levels_text: String,
     catalog_dirty: bool,
     catalog_window_open: bool,
+    restart_confirmation_open: bool,
+    restart_needed: bool,
     directory: String,
     directory_needs_refresh: bool,
     subscription_provider: String,
@@ -111,6 +114,8 @@ impl SwitcherApp {
             reasoning_levels_text: String::new(),
             catalog_dirty: false,
             catalog_window_open: false,
+            restart_confirmation_open: false,
+            restart_needed: false,
             subscription_provider: "openai".into(),
             api_provider: "openai".into(),
             endpoint: config::DEFAULT_API_BASE_URL.into(),
@@ -170,6 +175,14 @@ impl SwitcherApp {
         match output {
             WorkerOutput::Status(result) => match result {
                 Ok(status) => {
+                    if self
+                        .status
+                        .as_ref()
+                        .is_some_and(|previous| !previous.config_exists)
+                        && status.config_exists
+                    {
+                        self.restart_needed = true;
+                    }
                     self.target = if status.mode == Some(Mode::Api) {
                         Mode::Subscription
                     } else {
@@ -208,6 +221,7 @@ impl SwitcherApp {
             },
             WorkerOutput::Applied(result) => match result {
                 Ok((applied, status)) => {
+                    self.restart_needed |= applied.restart_required;
                     self.clear_key();
                     self.message = if applied.changed {
                         format!(
@@ -265,6 +279,7 @@ impl SwitcherApp {
             },
             WorkerOutput::CatalogSaved(result) => match result {
                 Ok((catalog, saved)) => {
+                    self.restart_needed |= saved.backup.is_some();
                     self.selected_model = self.selected_model.min(catalog.models.len() - 1);
                     self.reasoning_levels_text = catalog
                         .models
@@ -306,6 +321,13 @@ impl SwitcherApp {
                     self.message = "目录选择已取消，未修改本地文件。".into();
                 }
             }
+            WorkerOutput::Restarted(result) => match result {
+                Ok(()) => {
+                    self.restart_needed = false;
+                    self.message = "Codex 桌面应用已重启。请新建会话以使用最新配置。".into();
+                }
+                Err(error) => self.show_error(&error),
+            },
         }
     }
 
@@ -489,6 +511,12 @@ impl SwitcherApp {
                 (applied, status)
             }))
         });
+    }
+
+    fn restart_codex(&mut self) {
+        self.restart_confirmation_open = false;
+        self.start_work(|_| WorkerOutput::Restarted(crate::restart::restart()));
+        self.message = "正在关闭并重新启动 Codex 桌面应用...".into();
     }
 
     fn clear_key(&mut self) {

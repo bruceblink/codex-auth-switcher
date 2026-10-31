@@ -3,6 +3,7 @@
 mod app;
 #[cfg(test)]
 mod demo;
+mod restart;
 
 fn main() -> anyhow::Result<()> {
     let paths = switcher_core::Paths::resolve(None)?;
