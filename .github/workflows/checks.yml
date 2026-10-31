@@ -33,9 +33,19 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Read Rust toolchain from rust-toolchain.toml
+        id: rust-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' rust-toolchain.toml)"
+          [[ -n "$toolchain" ]]
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
+          toolchain: ${{ steps.rust-toolchain.outputs.toolchain }}
           components: clippy, rustfmt
 
       - name: Initialize and verify Windows MSVC/CMake environment
@@ -146,8 +156,19 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Read Rust toolchain from rust-toolchain.toml
+        id: rust-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' rust-toolchain.toml)"
+          [[ -n "$toolchain" ]]
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.toolchain }}
 
       - name: Initialize and verify Windows MSVC/CMake environment
         if: runner.os == 'Windows'
