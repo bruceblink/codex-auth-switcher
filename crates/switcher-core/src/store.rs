@@ -145,7 +145,7 @@ pub struct SwitchResult {
 #[derive(Clone)]
 pub struct Store {
     pub paths: Paths,
-    inherit_environment: bool,
+    use_user_environment: bool,
     #[cfg(test)]
     fail_after_auth: bool,
     #[cfg(test)]
@@ -156,7 +156,7 @@ impl Store {
     pub fn new(paths: Paths) -> Self {
         Self {
             paths,
-            inherit_environment: true,
+            use_user_environment: true,
             #[cfg(test)]
             fail_after_auth: false,
             #[cfg(test)]
@@ -164,10 +164,10 @@ impl Store {
         }
     }
 
-    /// Demo and tests must never read credentials from the host environment.
+    /// Demo and tests must not read or write the host user environment.
     pub fn isolated(paths: Paths) -> Self {
         Self {
-            inherit_environment: false,
+            use_user_environment: false,
             ..Self::new(paths)
         }
     }
@@ -185,7 +185,7 @@ impl Store {
         if let Some(value) = self.environment.get(name) {
             return Ok(Some(Zeroizing::new(value.clone())));
         }
-        if self.inherit_environment {
+        if self.use_user_environment {
             environment_key(&self.paths, name)
         } else {
             Ok(None)
@@ -767,10 +767,10 @@ impl Store {
                 )),
             };
         }
-        let environment_persisted = prepared
-            .persist_api_key
-            .as_deref()
-            .map(|key| crate::environment::persist_api_key(key));
+        let environment_persisted = prepared.persist_api_key.as_deref().and_then(|key| {
+            self.use_user_environment
+                .then(|| crate::environment::persist_api_key(key))
+        });
         Ok(SwitchResult {
             target: prepared.preview.target,
             changed: prepared.preview.changed,

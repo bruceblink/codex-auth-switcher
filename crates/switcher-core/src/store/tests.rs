@@ -598,7 +598,7 @@ fn api_key_comes_from_input_or_saved_auth_but_other_environment_options_still_ap
     let prepared = data.store.prepare(Mode::Api, options)?;
     assert_eq!(prepared.preview.auth_source, "user input");
     let result = data.store.apply(prepared)?;
-    assert_eq!(result.environment_persisted, Some(true));
+    assert_eq!(result.environment_persisted, None);
     let status = data.store.status()?;
     assert_eq!(status.provider, "ui.api");
     assert_eq!(status.base_url, "https://ui.example.invalid/v1");
@@ -615,6 +615,25 @@ fn api_key_comes_from_input_or_saved_auth_but_other_environment_options_still_ap
     assert!(!fs::read_to_string(data.store.paths.auth())?.contains("synthetic-env-key"));
     assert!(!fs::read_to_string(data.store.paths.config())?.contains("synthetic-"));
     assert!(!data.store.paths.home.join(".env").exists());
+    Ok(())
+}
+
+#[test]
+fn normal_store_reports_persistence_for_an_entered_api_key() -> anyhow::Result<()> {
+    let mut data = empty_data()?;
+    data.initialize()?;
+    data.store.use_user_environment = true;
+    let prepared = data.store.prepare(
+        Mode::Api,
+        SwitchOptions {
+            api_key: Some(Zeroizing::new("synthetic-persistence-test".into())),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(
+        data.store.apply(prepared)?.environment_persisted,
+        Some(true)
+    );
     Ok(())
 }
 
