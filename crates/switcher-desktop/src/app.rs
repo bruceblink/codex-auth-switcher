@@ -32,6 +32,7 @@ type DialogFuture = Pin<Box<dyn Future<Output = Option<PathBuf>> + Send + 'stati
 pub(crate) struct FileDialogs {
     pub(crate) pick_file: Arc<dyn Fn(bool) -> DialogFuture + Send + Sync>,
     pub(crate) pick_folder: Arc<dyn Fn() -> DialogFuture + Send + Sync>,
+    pub(crate) pick_model_catalog: Arc<dyn Fn() -> DialogFuture + Send + Sync>,
 }
 
 impl FileDialogs {
@@ -59,6 +60,16 @@ impl FileDialogs {
                         .pick_folder()
                         .await
                         .map(|folder| folder.path().to_path_buf())
+                })
+            }),
+            pick_model_catalog: Arc::new(|| {
+                Box::pin(async move {
+                    AsyncFileDialog::new()
+                        .set_title("选择 Codex 模型目录 JSON")
+                        .add_filter("JSON", &["json"])
+                        .pick_file()
+                        .await
+                        .map(|file| file.path().to_path_buf())
                 })
             }),
         }

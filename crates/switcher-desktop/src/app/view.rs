@@ -524,6 +524,7 @@ impl Switcher {
 
     fn catalog_workspace(&self, wide: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let catalog = self.catalog.catalog.as_ref();
+        let catalog_path = catalog.map(|catalog| catalog.path.clone());
         let selected = self.catalog.selected_model;
         let enabled = !self.busy;
         let model_buttons = catalog
@@ -641,7 +642,7 @@ impl Switcher {
             div().flex_1().p_8().child(
                 div()
                     .text_color(cx.theme().muted_foreground)
-                    .child("尚未读取模型目录。请先在 Codex config.toml 中设置 model_catalog_json，再读取已配置的目录。"),
+                    .child("尚未读取模型目录。可以读取已配置目录，或选择现有 JSON 文件。若 config.toml 不存在，请先初始化配置。"),
             )
         };
         let content = div()
@@ -665,6 +666,22 @@ impl Switcher {
                             .child("Codex 模型目录"),
                     )
                     .child(div().flex_1())
+                    .child(
+                        Button::new("catalog-choose")
+                            .compact()
+                            .label("选择 JSON 文件")
+                            .disabled(!enabled || self.catalog.dirty)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose_model_catalog(window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .mb_4()
                     .child(
                         Button::new("catalog-load")
                             .compact()
@@ -711,6 +728,12 @@ impl Switcher {
                             ),
                     ),
             )
+            .when(catalog_path.is_some(), |view| {
+                view.child(hint(
+                    format!("当前模型目录：{}", catalog_path.clone().unwrap_or_default()),
+                    false,
+                ))
+            })
             .when(self.catalog.dirty, |view| {
                 view.child(hint("有未保存改动。保存前不能重新读取或切换目录。", true))
             })

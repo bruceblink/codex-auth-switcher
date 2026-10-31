@@ -42,6 +42,17 @@ model = "imported-subscription-model"
 model_reasoning_effort = "high"
 "#;
 const IMPORTED_SUBSCRIPTION_AUTH: &[u8] = br#"{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-imported-access","refresh_token":"synthetic-imported-refresh","id_token":"synthetic-imported-id","account_id":"synthetic-imported-account"}}"#;
+const IMPORTED_API: &str = r#"model_provider = "OpenAI"
+model = "imported-api-model"
+model_reasoning_effort = "xhigh"
+model_context_window = 372000
+[model_providers."OpenAI"]
+name = "API gateway"
+base_url = "https://gateway.example.invalid/v1"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = true
+"#;
 const KEY: &str = "synthetic-api-test-value";
 
 struct Data {
@@ -670,6 +681,238 @@ fn configure_model_catalog_value(paths: &Paths, value: &str) -> anyhow::Result<(
         paths.config(),
         format!("model_catalog_json = \"{value}\"\n"),
     )?;
+    Ok(())
+}
+
+fn write_model_catalog(path: &Path, slug: &str, effort: &str) -> anyhow::Result<()> {
+    let contents = serde_json::json!({
+        "models": [{
+            "slug": slug,
+            "display_name": slug,
+            "visibility": "list",
+            "default_reasoning_level": effort,
+            "supported_reasoning_levels": [{"effort": effort}],
+            "priority": 1,
+        }]
+    });
+    fs::write(path, serde_json::to_vec(&contents)?)?;
+    Ok(())
+}
+
+#[test]
+fn configure_model_catalog_without_a_vault_updates_only_config_and_sanitized_backup()
+-> anyhow::Result<()> {
+    let data = Data::new()?;
+    let catalog_path = data.store.paths.home.join("selected-models.json");
+    write_model_catalog(&catalog_path, "test-api-model", "xhigh")?;
+    let original = format!("unrelated_test_secret = \"synthetic-unrelated-secret\"\n{API}");
+    fs::write(data.store.paths.config(), &original)?;
+
+    let catalog = data.store.configure_model_catalog(&catalog_path)?;
+
+    assert_eq!(catalog.path, catalog_path.to_string_lossy());
+    assert_eq!(catalog.models.len(), 1);
+    assert!(!data.store.paths.vault().exists());
+    let configured = config::parse(&fs::read(data.store.paths.config())?)?;
+    assert_eq!(
+        configured["model_catalog_json"].as_str(),
+        catalog_path.to_str()
+    );
+    assert_eq!(
+        configured["unrelated_test_secret"].as_str(),
+        Some("synthetic-unrelated-secret")
+    );
+    let backup = fs::read_dir(&data.store.paths.home)?
+        .filter_map(std::result::Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("config.toml.bak-")
+        })
+        .ok_or_else(|| anyhow::anyhow!("configuration backup was not created"))?;
+    let backup_bytes = fs::read(backup.path())?;
+    assert!(!String::from_utf8_lossy(&backup_bytes).contains("synthetic-unrelated-secret"));
+    assert!(
+        config::parse(&backup_bytes)?
+            .get("model_provider")
+            .is_some()
+    );
+    Ok(())
+}
+
+#[test]
+fn configure_model_catalog_rejects_missing_config_and_invalid_json_without_writes()
+-> anyhow::Result<()> {
+    let data = empty_data()?;
+    let missing_config_catalog = data.store.paths.home.join("valid-models.json");
+    write_model_catalog(&missing_config_catalog, "test-api-model", "xhigh")?;
+    let missing_error = data
+        .store
+        .configure_model_catalog(&missing_config_catalog)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("missing config.toml was accepted"))?;
+    assert_eq!(
+        missing_error.0,
+        "Codex config.toml was not found. Initialize the Codex configuration first."
+    );
+    assert!(!data.store.paths.config().exists());
+
+    fs::write(data.store.paths.config(), API)?;
+    let invalid_catalog = data.store.paths.home.join("invalid-models.json");
+    fs::write(&invalid_catalog, "not JSON")?;
+    let before = fs::read(data.store.paths.config())?;
+    let error = data
+        .store
+        .configure_model_catalog(&invalid_catalog)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("invalid JSON catalog was accepted"))?;
+    assert_eq!(error.0, "Selected Codex model catalog JSON is invalid.");
+    assert_eq!(fs::read(data.store.paths.config())?, before);
+    fs::write(&invalid_catalog, r#"{"models":[]}"#)?;
+    let error = data
+        .store
+        .configure_model_catalog(&invalid_catalog)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("invalid model fields were accepted"))?;
+    assert_eq!(
+        error.0,
+        "Codex model catalog must contain between 1 and 512 models."
+    );
+    assert_eq!(fs::read(data.store.paths.config())?, before);
+    assert_eq!(
+        fs::read_dir(&data.store.paths.home)?
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("config.toml.bak-"))
+            .count(),
+        0
+    );
+    Ok(())
+}
+
+#[test]
+fn configure_model_catalog_preserves_only_active_imported_profile_across_round_trip()
+-> anyhow::Result<()> {
+    let data = Data::new()?;
+    let subscription_catalog = data.store.paths.home.join("subscription-models.json");
+    write_model_catalog(&subscription_catalog, "test-subscription-model", "max")?;
+    let subscription_backup = data
+        .store
+        .paths
+        .home
+        .join("config.toml.bak-20261024-170412");
+    fs::write(
+        &subscription_backup,
+        format!("model_catalog_json = \"subscription-models.json\"\n{SUBSCRIPTION}"),
+    )?;
+    data.initialize()?;
+
+    let imported_config = data.store.paths.home.join("imported-api.toml");
+    let imported_auth = data.store.paths.home.join("imported-api-auth.json");
+    fs::write(&imported_config, IMPORTED_API)?;
+    fs::write(&imported_auth, config::api_auth(KEY)?)?;
+    data.store.initialize(ImportSources {
+        api_config: Some(imported_config),
+        api_auth: Some(imported_auth),
+        ..Default::default()
+    })?;
+
+    let selected_catalog = data.store.paths.home.join("api-models.json");
+    write_model_catalog(&selected_catalog, "imported-api-model", "xhigh")?;
+    data.store.configure_model_catalog(&selected_catalog)?;
+
+    let cipher = Cipher::open(&data.store.paths, false)?;
+    let (state, _) = data.store.state(&cipher)?;
+    let api_profile = state
+        .profiles
+        .get(&Mode::Api)
+        .ok_or_else(|| anyhow::anyhow!("active API profile is missing"))?;
+    let api_config = config::parse(api_profile.config.as_bytes())?;
+    assert_eq!(
+        api_config["model_catalog_json"].as_str(),
+        selected_catalog.to_str()
+    );
+    assert_eq!(api_config["model"].as_str(), Some("imported-api-model"));
+    assert_ne!(api_profile.config_source, "latest active config");
+    let subscription_profile = state
+        .profiles
+        .get(&Mode::Subscription)
+        .ok_or_else(|| anyhow::anyhow!("subscription profile is missing"))?;
+    let subscription_config = config::parse(subscription_profile.config.as_bytes())?;
+    assert_eq!(
+        subscription_config["model_catalog_json"].as_str(),
+        Some("subscription-models.json")
+    );
+
+    data.switch(Mode::Subscription)?;
+    let active_subscription = config::parse(&data.active()?.config)?;
+    assert_eq!(
+        active_subscription["model_catalog_json"].as_str(),
+        Some("subscription-models.json")
+    );
+    data.switch(Mode::Api)?;
+    let active_api = data.active()?;
+    let active_api_config = config::parse(&active_api.config)?;
+    assert_eq!(
+        active_api_config["model_catalog_json"].as_str(),
+        selected_catalog.to_str()
+    );
+    assert_eq!(
+        active_api_config["model"].as_str(),
+        Some("imported-api-model")
+    );
+    assert_eq!(
+        active_api.auth.as_deref(),
+        Some(config::api_auth(KEY)?.as_slice())
+    );
+    Ok(())
+}
+
+#[test]
+fn configure_model_catalog_failure_restores_config_and_vault() -> anyhow::Result<()> {
+    let mut data = Data::new()?;
+    data.initialize()?;
+    let catalog_path = data.store.paths.home.join("selected-models.json");
+    write_model_catalog(&catalog_path, "test-api-model", "xhigh")?;
+    let before_active = data.active()?;
+    let before_vault = fs::read(data.store.paths.vault())?;
+    data.store.fail_catalog_after_config = true;
+
+    assert!(data.store.configure_model_catalog(&catalog_path).is_err());
+
+    assert!(data.active()? == before_active);
+    assert_eq!(fs::read(data.store.paths.vault())?, before_vault);
+    assert!(!data.store.paths.journal().exists());
+    Ok(())
+}
+
+#[test]
+fn configure_model_catalog_rejects_an_unknown_active_mode_when_vault_exists() -> anyhow::Result<()>
+{
+    let data = Data::new()?;
+    data.initialize()?;
+    let catalog_path = data.store.paths.home.join("selected-models.json");
+    write_model_catalog(&catalog_path, "test-api-model", "xhigh")?;
+    fs::remove_file(data.store.paths.auth())?;
+    let before_config = fs::read(data.store.paths.config())?;
+    let before_vault = fs::read(data.store.paths.vault())?;
+
+    let error = data
+        .store
+        .configure_model_catalog(&catalog_path)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("unknown active mode was accepted"))?;
+
+    assert_eq!(
+        error.0,
+        "Cannot determine the active mode. Select a model catalog after activating a mode."
+    );
+    assert_eq!(fs::read(data.store.paths.config())?, before_config);
+    assert_eq!(fs::read(data.store.paths.vault())?, before_vault);
+    assert!(!data.store.paths.journal().exists());
     Ok(())
 }
 

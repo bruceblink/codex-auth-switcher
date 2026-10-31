@@ -1,6 +1,7 @@
-use super::Store;
+use super::{Active, Journal, Store};
 use crate::{
     Error, Result, config,
+    crypto::Cipher,
     files::{self, Lock},
 };
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
-use toml_edit::DocumentMut;
+use toml_edit::{DocumentMut, value};
 
 /// Editable view of the Codex model catalog, bound to the file version it loaded.
 #[derive(Clone)]
@@ -108,22 +109,195 @@ fn configured_catalog_path(store: &Store) -> Result<PathBuf> {
     ))
 }
 
+fn selected_catalog_path(path: &Path, config_dir: &Path) -> Result<(PathBuf, String)> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        config_dir.join(path)
+    };
+    let text = path
+        .to_str()
+        .ok_or(Error("Model catalog path must be valid Unicode."))?;
+    if text.is_empty() || text.len() > 4096 || text.chars().any(char::is_control) {
+        return Err(Error("Model catalog path is invalid."));
+    }
+    let text = text.to_string();
+    Ok((path, text))
+}
+
+fn read_model_catalog(path: &Path, path_text: String, home: &Path) -> Result<ModelCatalog> {
+    let original = files::read(path, files::CONFIG_LIMIT)?
+        .ok_or(Error("Selected Codex model catalog was not found."))?;
+    let document: ModelCatalogDocument = serde_json::from_slice(&original)
+        .map_err(|_| Error("Selected Codex model catalog JSON is invalid."))?;
+    validate_model_catalog(&document.models)?;
+    Ok(ModelCatalog {
+        path: path_text,
+        models: document.models,
+        original,
+        extra: document.extra,
+        home: home.to_path_buf(),
+    })
+}
+
+fn config_with_model_catalog_path(config_bytes: &[u8], path: &str) -> Result<Vec<u8>> {
+    let mut document = config::parse(config_bytes)?;
+    document["model_catalog_json"] = value(path);
+    serialize_config(document)
+}
+
+fn serialize_config(document: DocumentMut) -> Result<Vec<u8>> {
+    let mut output = document
+        .to_string()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    config::parse(output.as_bytes())?;
+    Ok(output.into_bytes())
+}
+
 impl Store {
     /// Load the Codex model catalog and retain its source bytes for conflict detection.
     pub fn load_model_catalog(&self) -> Result<ModelCatalog> {
         let path = configured_catalog_path(self)?;
-        let original = files::read(&path, files::CONFIG_LIMIT)?
-            .ok_or(Error("Configured Codex model catalog was not found."))?;
-        let document: ModelCatalogDocument = serde_json::from_slice(&original)
-            .map_err(|_| Error("Codex model catalog JSON is invalid."))?;
-        validate_model_catalog(&document.models)?;
-        Ok(ModelCatalog {
-            path: path.to_string_lossy().into_owned(),
-            models: document.models,
-            original,
-            extra: document.extra,
-            home: self.paths.home.clone(),
-        })
+        let path_text = path.to_string_lossy().into_owned();
+        read_model_catalog(&path, path_text, &self.paths.home)
+    }
+
+    /// Configure an existing catalog for the active mode, then return its loaded model list.
+    ///
+    /// The selected file is validated before any write. If a mode vault exists, the active
+    /// profile receives only the catalog-path change so imported model settings remain intact.
+    pub fn configure_model_catalog(&self, path: &Path) -> Result<ModelCatalog> {
+        let _lock = Lock::acquire(&self.paths)?;
+        self.legacy_pending()?;
+        if self.paths.journal().exists() {
+            return Err(Error(
+                "Recovery is pending. Initialize modes to recover before selecting a model catalog.",
+            ));
+        }
+
+        let before_config = files::read(&self.paths.config(), files::CONFIG_LIMIT)?.ok_or(
+            Error("Codex config.toml was not found. Initialize the Codex configuration first."),
+        )?;
+        let (selected_path, selected_text) = selected_catalog_path(path, &self.paths.home)?;
+        let catalog = read_model_catalog(&selected_path, selected_text.clone(), &self.paths.home)?;
+        let after_config = config_with_model_catalog_path(&before_config, &selected_text)?;
+        let before = Active {
+            config: before_config,
+            auth: files::read(&self.paths.auth(), files::AUTH_LIMIT)?,
+        };
+        let after = Active {
+            config: after_config,
+            auth: before.auth.clone(),
+        };
+        let config_changed = before.config != after.config;
+
+        let mut cipher = None;
+        let mut vault_before = None;
+        let mut vault_after = None;
+        let mut vault_changed = false;
+        if files::read(&self.paths.vault(), files::STATE_LIMIT)?.is_some() {
+            let opened = Cipher::open(&self.paths, false)?;
+            let (mut state, raw_vault) = self.state(&opened)?;
+            let mode = Self::kind(&before.config, before.auth.as_deref())?.ok_or(Error(
+                "Cannot determine the active mode. Select a model catalog after activating a mode.",
+            ))?;
+            if before.auth.is_some() && config::auth_mode(before.auth.as_deref())? != Some(mode) {
+                return Err(Error(
+                    "The active configuration and authentication do not match one mode.",
+                ));
+            }
+            if let Some(profile) = state.profiles.get_mut(&mode) {
+                let updated =
+                    config_with_model_catalog_path(profile.config.as_bytes(), &selected_text)?;
+                let updated = String::from_utf8(updated)
+                    .map_err(|_| Error("Cannot encode the saved mode configuration."))?;
+                if profile.config != updated {
+                    profile.config = updated;
+                    vault_changed = true;
+                }
+            }
+            vault_before = Some(raw_vault.clone());
+            vault_after = Some(if vault_changed {
+                Self::encode(&opened, "modes", &state)?
+            } else {
+                raw_vault
+            });
+            cipher = Some(opened);
+        }
+
+        if !config_changed && !vault_changed {
+            return Ok(catalog);
+        }
+        if self.active()? != before
+            || files::read(&self.paths.vault(), files::STATE_LIMIT)? != vault_before
+        {
+            return Err(Error(
+                "Files changed while configuring the model catalog. Refresh and retry.",
+            ));
+        }
+        if config_changed {
+            let backup = super::profile_backup(&before.config)?;
+            self.backup(backup.as_bytes())?;
+        }
+
+        if !vault_changed {
+            files::write(&self.paths.config(), &after.config)?;
+            return Ok(catalog);
+        }
+
+        let cipher = cipher.ok_or(Error("Cannot open the encrypted mode archive."))?;
+        let vault_before = vault_before.ok_or(Error("The encrypted mode archive is missing."))?;
+        let vault_after = vault_after.ok_or(Error("The updated mode archive is missing."))?;
+        let record = Journal {
+            version: 2,
+            before,
+            after,
+            vault_before,
+            vault_after,
+        };
+        files::write(
+            &self.paths.journal(),
+            &Self::encode(&cipher, "pending", &record)?,
+        )?;
+        let operation = (|| {
+            if self.active()? != record.before
+                || files::read(&self.paths.vault(), files::STATE_LIMIT)?.as_deref()
+                    != Some(record.vault_before.as_slice())
+            {
+                return Err(Error("Files changed before configuring the model catalog."));
+            }
+            if config_changed {
+                files::write(&self.paths.config(), &record.after.config)?;
+            }
+            #[cfg(test)]
+            if self.fail_catalog_after_config {
+                return Err(Error("Simulated model catalog configuration failure."));
+            }
+            files::write(&self.paths.vault(), &record.vault_after)?;
+            if self.active()? != record.after
+                || files::read(&self.paths.vault(), files::STATE_LIMIT)?.as_deref()
+                    != Some(record.vault_after.as_slice())
+            {
+                return Err(Error("External changes interrupted model catalog setup."));
+            }
+            std::fs::remove_file(self.paths.journal())
+                .map_err(|_| Error("Cannot clear completed recovery record."))
+        })();
+        if operation.is_err() {
+            return match self.recover(&cipher) {
+                Ok(()) => Err(Error(
+                    "Model catalog setup failed; the previous configuration and mode archive were restored.",
+                )),
+                Err(_) => Err(Error(
+                    "Model catalog setup is incomplete. Preserve pending.enc and initialize to recover.",
+                )),
+            };
+        }
+        Ok(catalog)
     }
 
     /// Back up and atomically save validated options without overwriting concurrent edits.

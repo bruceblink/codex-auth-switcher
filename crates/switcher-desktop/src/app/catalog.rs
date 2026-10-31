@@ -282,6 +282,54 @@ impl Switcher {
         );
     }
 
+    pub(crate) fn choose_model_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if self.catalog.dirty {
+            self.message = "有未保存的模型目录改动。请先保存或放弃，再选择文件。".into();
+            self.error = true;
+            cx.notify();
+            return;
+        }
+        if !self.select_directory(window, cx) {
+            return;
+        }
+
+        self.busy = true;
+        self.error = false;
+        self.message = "正在打开模型目录 JSON 选择器...".into();
+        cx.notify();
+        let picker = self.file_dialogs.pick_model_catalog.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let selected = picker().await;
+            let _ = this.update_in(cx, move |this, window, cx| {
+                this.busy = false;
+                if let Some(path) = selected {
+                    this.execute(
+                        window,
+                        cx,
+                        move |store| store.configure_model_catalog(&path),
+                        |this, catalog, window, cx| {
+                            let path = catalog.path.clone();
+                            this.catalog.load(catalog, window, cx);
+                            this.prepared = None;
+                            this.restart_needed = true;
+                            this.message =
+                                format!("已选择模型目录：{path}。请重启 Codex 让模型设置生效。");
+                            this.error = false;
+                        },
+                    );
+                } else {
+                    this.message = "文件选择已取消，未修改配置。".into();
+                    this.error = false;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(crate) fn clone_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;

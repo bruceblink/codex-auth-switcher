@@ -150,6 +150,8 @@ pub struct Store {
     #[cfg(test)]
     fail_after_auth: bool,
     #[cfg(test)]
+    fail_catalog_after_config: bool,
+    #[cfg(test)]
     environment: BTreeMap<String, String>,
 }
 
@@ -160,6 +162,8 @@ impl Store {
             use_user_environment: true,
             #[cfg(test)]
             fail_after_auth: false,
+            #[cfg(test)]
+            fail_catalog_after_config: false,
             #[cfg(test)]
             environment: BTreeMap::new(),
         }
@@ -224,13 +228,18 @@ impl Store {
     fn state(&self, cipher: &Cipher) -> Result<(State, Vec<u8>)> {
         let raw = files::read(&self.paths.vault(), files::STATE_LIMIT)?
             .ok_or(Error("Initialize modes before switching."))?;
-        let plain = cipher.decrypt("modes", &raw)?;
+        let state = self.decode_state(cipher, &raw)?;
+        Ok((state, raw))
+    }
+
+    fn decode_state(&self, cipher: &Cipher, raw: &[u8]) -> Result<State> {
+        let plain = cipher.decrypt("modes", raw)?;
         let state: State =
             serde_json::from_slice(&plain).map_err(|_| Error("Invalid encrypted mode data."))?;
         if state.version != 2 || state.profiles.len() > 2 {
             return Err(Error("Unsupported mode state version."));
         }
-        Ok((state, raw))
+        Ok(state)
     }
 
     fn encode<T: Serialize>(cipher: &Cipher, purpose: &str, data: &T) -> Result<Vec<u8>> {

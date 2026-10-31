@@ -4,7 +4,15 @@ use gpui_kit::{
     point, px, size,
     test::{TestAppContextExt, TestWindowExt},
 };
-use std::{fs, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 use switcher_core::{Mode, Paths, Store};
 
 fn open(
@@ -13,12 +21,27 @@ fn open(
     width: f32,
     height: f32,
 ) -> (AnyWindowHandle, Entity<Switcher>) {
-    let paths = Paths::resolve(Some(home))
-        .unwrap_or_else(|error| panic!("cannot resolve test directory: {error}"));
-    let dialogs = FileDialogs {
+    let dialogs = test_dialogs(Arc::new(|| Box::pin(async { None }) as DialogFuture));
+    open_with_dialogs(cx, home, width, height, dialogs)
+}
+
+fn test_dialogs(pick_model_catalog: Arc<dyn Fn() -> DialogFuture + Send + Sync>) -> FileDialogs {
+    FileDialogs {
         pick_file: Arc::new(|_| Box::pin(async { None }) as DialogFuture),
         pick_folder: Arc::new(|| Box::pin(async { None }) as DialogFuture),
-    };
+        pick_model_catalog,
+    }
+}
+
+fn open_with_dialogs(
+    cx: &mut TestAppContext,
+    home: PathBuf,
+    width: f32,
+    height: f32,
+    dialogs: FileDialogs,
+) -> (AnyWindowHandle, Entity<Switcher>) {
+    let paths = Paths::resolve(Some(home))
+        .unwrap_or_else(|error| panic!("cannot resolve test directory: {error}"));
     cx.update(gpui_kit::init);
     cx.update(|app| {
         gpui_kit::component::Theme::set_scrollbar_mode(
@@ -371,4 +394,116 @@ async fn scrollbars_reach_overflowing_switch_and_model_content(cx: &mut TestAppC
         );
     })
     .unwrap_or_else(|error| panic!("cannot inspect model list scrolling: {error}"));
+}
+
+#[gpui_kit::test]
+async fn selecting_model_catalog_loads_it_and_preserves_current_data_on_cancel_or_error(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let selected_path = temp.path().join("selected-models.json");
+    fs::write(
+        &selected_path,
+        r#"{"catalog_version":3,"models":[{"slug":"selected-model","display_name":"Selected Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Synthetic high"}],"priority":1}]}"#,
+    )
+    .unwrap_or_else(|error| panic!("cannot write selected model catalog: {error}"));
+    let invalid_path = temp.path().join("invalid-models.json");
+    fs::write(&invalid_path, "not JSON")
+        .unwrap_or_else(|error| panic!("cannot write invalid model catalog: {error}"));
+
+    let selected_file = Arc::new(Mutex::new(Some(selected_path.clone())));
+    let picker_calls = Arc::new(AtomicUsize::new(0));
+    let selected_file_for_picker = selected_file.clone();
+    let picker_calls_for_picker = picker_calls.clone();
+    let pick_model_catalog = Arc::new(move || {
+        picker_calls_for_picker.fetch_add(1, Ordering::SeqCst);
+        let selected = selected_file_for_picker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        Box::pin(async move { selected }) as DialogFuture
+    });
+    let dialogs = test_dialogs(pick_model_catalog);
+    let (window, app) = open_with_dialogs(cx, home.clone(), 1040., 740., dialogs);
+    idle(cx, window, &app).await;
+
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| view.prepared.is_some()));
+    click(cx, window, "models-tab");
+
+    click(cx, window, "catalog-choose");
+    idle(cx, window, &app).await;
+    assert_eq!(picker_calls.load(Ordering::SeqCst), 1);
+    let loaded_path = app.read_with(cx, |view, _| {
+        view.catalog
+            .catalog
+            .as_ref()
+            .map(|catalog| PathBuf::from(catalog.path.as_str()))
+    });
+    assert_eq!(
+        loaded_path.and_then(|path| path.file_name().map(PathBuf::from)),
+        Some(PathBuf::from("selected-models.json"))
+    );
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 1);
+    assert!(app.read_with(cx, |view, _| view.prepared.is_none()));
+    assert!(app.read_with(cx, |view, _| view.restart_needed));
+    assert!(app.read_with(cx, |view, _| view.message.contains("重启 Codex")));
+    let configured = fs::read(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot read configured test config: {error}"));
+    assert!(String::from_utf8_lossy(&configured).contains("selected-models.json"));
+
+    *selected_file
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+    click(cx, window, "catalog-choose");
+    idle(cx, window, &app).await;
+    assert_eq!(picker_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        fs::read(home.join("config.toml"))
+            .unwrap_or_else(|error| panic!("cannot read config after cancellation: {error}")),
+        configured
+    );
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 1);
+    assert!(app.read_with(cx, |view, _| view.message.contains("取消")));
+
+    *selected_file
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(invalid_path);
+    click(cx, window, "catalog-choose");
+    idle(cx, window, &app).await;
+    assert_eq!(picker_calls.load(Ordering::SeqCst), 3);
+    assert!(app.read_with(cx, |view, _| view.error));
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 1);
+    assert_eq!(
+        fs::read(home.join("config.toml"))
+            .unwrap_or_else(|error| panic!("cannot read config after invalid selection: {error}")),
+        configured
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        window.click("model-name", cx);
+        window.press("end", cx);
+        window.input("-edit", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot edit model in test: {error}"));
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    let call_count = picker_calls.load(Ordering::SeqCst);
+    click(cx, window, "catalog-choose");
+    idle(cx, window, &app).await;
+    assert_eq!(picker_calls.load(Ordering::SeqCst), call_count);
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .display_name
+            .read(cx)
+            .value()
+            .to_string()),
+        "Selected Model-edit"
+    );
 }

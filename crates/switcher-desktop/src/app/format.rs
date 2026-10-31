@@ -117,6 +117,9 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
         "Recovery is pending. Initialize modes to recover before previewing." => {
             "检测到未完成的恢复记录。请先执行初始化以恢复，再生成预览。"
         }
+        "Recovery is pending. Initialize modes to recover before selecting a model catalog." => {
+            "检测到未完成的恢复记录。请先执行初始化以恢复，再选择模型目录。"
+        }
         "The preview belongs to a different directory or recovery is pending." => {
             "此预览对应其他配置目录，或存在未完成的恢复记录。请刷新并重新预览。"
         }
@@ -139,6 +142,20 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
         }
         "Codex model catalog path is not configured in config.toml." => {
             "当前 config.toml 没有设置 model_catalog_json。Codex 会按实际生效的配置选择模型目录。"
+        }
+        "Codex config.toml was not found. Initialize the Codex configuration first." => {
+            "未找到 config.toml。请先创建默认配置。"
+        }
+        "Selected Codex model catalog was not found." => {
+            "选择的模型目录文件不存在。请确认文件仍然存在。"
+        }
+        "Selected Codex model catalog JSON is invalid." => "选择的模型目录 JSON 无效，未修改配置。",
+        "Model catalog path must be valid Unicode." => "模型目录路径必须使用有效的 Unicode 字符。",
+        "Cannot determine the active mode. Select a model catalog after activating a mode." => {
+            "无法确定当前模式。请先启用一个模式，再选择模型目录。"
+        }
+        "The active configuration and authentication do not match one mode." => {
+            "当前配置与认证不匹配。请先恢复一致的活动模式，再选择模型目录。"
         }
         "Model catalog path must be a string." => "model_catalog_json 必须是字符串路径。",
         "Model catalog path is invalid." => "model_catalog_json 路径无效。",
@@ -174,6 +191,22 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
         }
         "Cannot serialize the Codex model catalog." => "无法生成模型目录文件。",
         "Cannot reserve a unique model catalog backup." => "无法创建不覆盖的模型目录备份。",
+        "Files changed before configuring the model catalog." => {
+            "设置模型目录前，配置文件已发生变化。请刷新后重试。"
+        }
+        "Files changed while configuring the model catalog. Refresh and retry." => {
+            "设置模型目录时，文件已发生变化。请刷新后重试。"
+        }
+        "External changes interrupted model catalog setup." => {
+            "设置模型目录时检测到外部文件改动。请检查恢复记录后再继续。"
+        }
+        "Cannot clear completed recovery record." => "无法清除已完成的恢复记录。",
+        "Model catalog setup failed; the previous configuration and mode archive were restored." => {
+            "设置模型目录失败。工具已恢复之前的配置和模式存档。"
+        }
+        "Model catalog setup is incomplete. Preserve pending.enc and initialize to recover." => {
+            "模型目录设置未完成。请保留 pending.enc，并执行初始化以恢复。"
+        }
         "Target authentication is missing. Import a matching auth file." => {
             "目标模式缺少认证。请导入对应模式的认证 JSON。"
         }
