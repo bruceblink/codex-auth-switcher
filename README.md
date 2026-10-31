@@ -51,6 +51,8 @@ cargo test --workspace --locked
 
 Linux/macOS 本地打包可运行 `./scripts/package-unix.sh`。GitHub Actions 在 Windows、Linux 和 macOS 运行格式检查、Clippy、workspace 测试，并上传各平台的原始 Release 可执行文件和 SHA-256 校验文件。工作流不生成 ZIP 或 tar.gz；Windows runner 还会运行原生窗口验收，原生验收只使用临时目录和合成认证数据。
 
+CI 结构参考 [Ramag Desktop CI](https://github.com/bruceblink/ramag-platform/blob/ec0307090b19363db134dfce9d151b2627689e79/.github/workflows/desktop-ci.yml)。质量检查和发布构建分开，Actions 使用固定提交，Cargo 下载缓存按系统和架构隔离。`Release executables` 工作流可通过 `v*` 标签或手动操作构建 Windows x64、Linux x64、macOS ARM64 和 macOS x64 的原始文件；它不直接创建 GitHub Release。发布前须核对目标提交、各平台结果与 SHA-256。
+
 窗口图标以 `crates/switcher-desktop/assets/codex-auth-switcher.svg` 为源图。使用 `resvg 0.46.0` 渲染 PNG，再用 `Pillow 12.3.0` 从 PNG 生成包含 16、24、32、48、64、128 和 256 像素图像的 ICO。这两个工具只用于资源生成，不是程序运行时依赖。在仓库根目录运行以下命令可重建资源：
 
 ```powershell

@@ -29,12 +29,12 @@ jobs:
           - macos-15-intel
     steps:
       - name: Checkout source
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install Rust stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
           components: clippy, rustfmt
 
@@ -47,18 +47,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          case "$RUNNER_OS/$RUNNER_ARCH" in
+            Windows/X64) expected_host=x86_64-pc-windows-msvc ;;
+            Linux/X64) expected_host=x86_64-unknown-linux-gnu ;;
+            macOS/ARM64) expected_host=aarch64-apple-darwin ;;
+            macOS/X64) expected_host=x86_64-apple-darwin ;;
+            *) echo "Unsupported runner architecture: $RUNNER_OS/$RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          [[ "$host" == "$expected_host" ]] || {
+            echo "Expected Rust host $expected_host, found $host." >&2
+            exit 1
+          }
           rustc -Vv
           uname -m
 
       - name: Restore Cargo download cache
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
-            cargo-${{ runner.os }}-
+            cargo-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install Linux desktop build dependencies
         if: runner.os == 'Linux'
@@ -117,21 +129,25 @@ jobs:
       matrix:
         include:
           - os: windows-2025
+            binary_arch: x86_64
             binary_glob: dist/codex-auth-switcher-*-windows-*.exe
           - os: ubuntu-24.04
+            binary_arch: x86_64
             binary_glob: dist/codex-auth-switcher-*-linux-x64
           - os: macos-15
+            binary_arch: arm64
             binary_glob: dist/codex-auth-switcher-*-macos-arm64
           - os: macos-15-intel
+            binary_arch: x86_64
             binary_glob: dist/codex-auth-switcher-*-macos-x64
     steps:
       - name: Checkout source
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install Rust stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
 
       - name: Initialize and verify Windows MSVC/CMake environment
         if: runner.os == 'Windows'
@@ -142,18 +158,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          case "$RUNNER_OS/$RUNNER_ARCH" in
+            Windows/X64) expected_host=x86_64-pc-windows-msvc ;;
+            Linux/X64) expected_host=x86_64-unknown-linux-gnu ;;
+            macOS/ARM64) expected_host=aarch64-apple-darwin ;;
+            macOS/X64) expected_host=x86_64-apple-darwin ;;
+            *) echo "Unsupported runner architecture: $RUNNER_OS/$RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          [[ "$host" == "$expected_host" ]] || {
+            echo "Expected Rust host $expected_host, found $host." >&2
+            exit 1
+          }
           rustc -Vv
           uname -m
 
       - name: Restore Cargo download cache
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
-            cargo-${{ runner.os }}-
+            cargo-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install Linux desktop build dependencies
         if: runner.os == 'Linux'
@@ -224,7 +252,7 @@ jobs:
           test -x "$binary"
           file "$binary"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
-            lipo "$binary" -verify_arch "$(uname -m)"
+            lipo "$binary" -verify_arch "${{ matrix.binary_arch }}"
           else
             readelf -h "$binary" | grep -q 'Advanced Micro Devices X86-64'
           fi
@@ -232,14 +260,14 @@ jobs:
           if command -v sha256sum >/dev/null 2>&1; then sha256sum -c "$(basename "$checksum")"; else shasum -a 256 -c "$(basename "$checksum")"; fi
 
       - name: Upload raw executable
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: ${{ matrix.binary_glob }}
           archive: false
           if-no-files-found: error
 
       - name: Upload executable checksum
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: ${{ matrix.binary_glob }}.sha256
           archive: false
