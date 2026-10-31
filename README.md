@@ -64,6 +64,17 @@ python -c "from PIL import Image; Image.open('crates/switcher-desktop/assets/cod
 
 PNG 用于 X11 窗口；Windows ICO 通过 `build.rs` 和 `embed-resource` 以资源 ID 1 编入 Release PE，Windows 打包脚本和 CI 的 Cargo 构建会自动包含它。macOS 当前发布原始可执行文件，不包含 `.app` 图标。
 
+## 许可证
+
+本项目采用 GPL-3.0-only，完整文本见 [LICENSE](LICENSE)。发布目标所含依赖的许可文本和署名见 [第三方许可通知](THIRD-PARTY-NOTICES.html)。第三方组件继续采用各自的许可条款，通知文件不会将其改许可为 GPL-3.0-only。
+
+在仓库根目录运行以下命令可重建通知文件：
+
+```powershell
+cargo install --locked --version 0.9.3 --features cli cargo-about
+.\scripts\licenses\generate.ps1
+```
+
 ## 文档
 
 - [Rust + GPUI Kit 开发计划](docs/01-development-plan.md)

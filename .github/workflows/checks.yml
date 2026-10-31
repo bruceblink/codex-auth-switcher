@@ -293,3 +293,30 @@ jobs:
           path: ${{ matrix.binary_glob }}.sha256
           archive: false
           if-no-files-found: error
+
+      - name: Upload GPL license
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-auth-switcher-linux-license
+          path: dist/LICENSE
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload third-party notices
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-auth-switcher-linux-third-party-notices
+          path: dist/THIRD-PARTY-NOTICES.html
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload source and build information
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-auth-switcher-linux-sources
+          path: dist/SOURCES.txt
+          archive: false
+          if-no-files-found: error

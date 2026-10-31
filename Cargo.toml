@@ -8,6 +8,7 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.99.1"
 repository = "https://github.com/bruceblink/codex-auth-switcher"
+license = "GPL-3.0-only"
 
 [workspace.dependencies]
 gpui-kit = "=0.8.1"

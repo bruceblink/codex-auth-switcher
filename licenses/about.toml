@@ -1,0 +1,53 @@
+# Regenerate the release notices with .\scripts\licenses\generate.ps1.
+# Keep these targets aligned with the release executable matrix.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+
+# Keep ordinary and build dependencies; omit development-only dependencies.
+ignore-dev-dependencies = true
+
+# Use the standard cargo-about clarifications for these license expressions.
+workarounds = ["ring", "rustls"]
+
+# Choose one license from OR expressions. AND terms remain included in full.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "0BSD",
+    "NCSA",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "MIT-0",
+    "Unlicense",
+    "Zlib",
+    "MPL-2.0",
+    "BSL-1.0",
+    "GPL-3.0-only",
+    "LGPL-2.1-or-later",
+]
+
+# gpui-kit-assets declares Apache-2.0 for its crate code. Its bundled Lucide
+# assets also carry ISC terms, and the listed Feather-derived icons carry MIT.
+# Checksums cover the exact subsections extracted from gpui-kit-assets 0.8.1.
+[gpui-kit-assets.clarify]
+license = "Apache-2.0 AND ISC AND MIT"
+
+[[gpui-kit-assets.clarify.files]]
+path = "LICENSE-LUCIDE"
+license = "ISC"
+checksum = "e8c0917890b51c42a1f264b8750724e5bd5bf700f98249d0d326833029391796"
+start = "ISC License"
+end = "zoom-out\n"
+
+[[gpui-kit-assets.clarify.files]]
+path = "LICENSE-LUCIDE"
+license = "MIT"
+checksum = "dc21952bfc2285ae2ebcea43fb83359e3ee248d78d06037a0c6562669ecb5dea"
+start = "The MIT License (MIT)"

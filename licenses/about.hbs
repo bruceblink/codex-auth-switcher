@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Third-Party Notices - Codex Auth Switcher</title>
+    <style>
+        :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+        body { margin: 0; padding: 2rem 1rem; line-height: 1.55; }
+        main { max-width: 72rem; margin: 0 auto; }
+        p, li { max-width: 75ch; }
+        nav ul, .crates { padding-left: 1.5rem; }
+        section.license { border-top: 1px solid #8888; margin-top: 2rem; padding-top: 1rem; }
+        pre { overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: #8881; }
+        code { overflow-wrap: anywhere; }
+        a { color: LinkText; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Third-party software notices</h1>
+    <p>Generated with cargo-about 0.9.3, this notice lists the license texts selected for the Cargo dependency graph used by the Windows x64, Linux x64, macOS ARM64, and macOS x64 release targets. It includes normal and build dependencies, and excludes development-only dependencies.</p>
+    <p>This document provides attribution and the applicable license texts. Each third-party component remains under the terms granted by its copyright holders. In particular, Apache-2.0 and MPL-2.0 terms apply to the components identified below; this project does not relicense third-party components under GPL-3.0-only. The project's own license is in the <code>LICENSE</code> file.</p>
+    <p>For crates that offer a choice of licenses, this report records the license selected by cargo-about to satisfy the crate's declared SPDX expression. A listed license does not replace any separate terms that a component's copyright holder requires.</p>
+
+    <nav aria-label="License overview">
+        <h2>License overview</h2>
+        <ul>
+            {{#each overview}}
+            <li>{{name}} ({{id}}) — {{count}} crate uses</li>
+            {{/each}}
+        </ul>
+    </nav>
+
+    <h2>License texts and covered crates</h2>
+    {{#each licenses}}
+    <section class="license">
+        <h3 id="license-{{@index}}">{{name}} ({{id}})</h3>
+        <h4>Crates</h4>
+        <ul class="crates">
+            {{#each used_by}}
+            <li>{{#if crate.repository}}<a href="{{crate.repository}}">{{crate.name}}</a>{{else}}{{crate.name}}{{/if}} {{crate.version}}</li>
+            {{/each}}
+        </ul>
+        <h4>Full license text</h4>
+        <pre>{{text}}</pre>
+    </section>
+    {{/each}}
+</main>
+</body>
+</html>

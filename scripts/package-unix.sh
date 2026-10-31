@@ -44,14 +44,39 @@ if [[ -z "$version" ]]; then
     exit 1
 fi
 
+repository=$(sed -n 's/^repository = "\(.*\)"/\1/p' "$manifest_path" | head -n 1)
+if [[ -z "$repository" ]]; then
+    echo "The workspace repository URL could not be read." >&2
+    exit 1
+fi
+if source_commit=$(git -C "$repository_root" rev-parse --verify HEAD 2>/dev/null) && [[ -n "$source_commit" ]]; then
+    source_url="$repository/tree/$source_commit"
+    lockfile_source="Cargo.lock at the source commit"
+else
+    source_commit=""
+    source_url="$repository"
+    lockfile_source="Cargo.lock from the selected repository revision"
+fi
+expected_tag="v${version}"
+
 mkdir -p "$output_directory"
 output_directory=$(CDPATH= cd -- "$output_directory" && pwd)
 binary_path="$repository_root/target/release/codex-auth-switcher"
 release_name="codex-auth-switcher-v${version}-${platform}-${architecture}"
 release_binary_path="$output_directory/$release_name"
+license_path="$output_directory/LICENSE"
+notices_path="$output_directory/THIRD-PARTY-NOTICES.html"
+sources_path="$output_directory/SOURCES.txt"
 
-for path in "$release_binary_path" "$release_binary_path.sha256"; do
-    if [[ -e "$path" ]]; then
+for source in "$repository_root/LICENSE" "$repository_root/THIRD-PARTY-NOTICES.html"; do
+    if [[ ! -f "$source" ]]; then
+        echo "A required source notice is missing: $source" >&2
+        exit 1
+    fi
+done
+
+for path in "$release_binary_path" "$release_binary_path.sha256" "$license_path" "$notices_path" "$sources_path"; do
+    if [[ -e "$path" || -L "$path" ]]; then
         echo "The package output already exists: $path" >&2
         exit 1
     fi
@@ -75,6 +100,17 @@ sha256_of() {
 
 printf '%s  %s\n' "$(sha256_of "$release_binary_path")" "$(basename "$release_binary_path")" \
     > "$release_binary_path.sha256"
+cp "$repository_root/LICENSE" "$license_path"
+cp "$repository_root/THIRD-PARTY-NOTICES.html" "$notices_path"
+{
+    printf 'Source code: %s\n' "$source_url"
+    if [[ -n "$source_commit" ]]; then
+        printf 'Source commit: %s\n' "$source_commit"
+    fi
+    printf 'Expected version tag: %s (tag creation is not assumed)\n' "$expected_tag"
+    printf 'Build command: cargo build --release --locked\nDependency lockfile: %s\n' "$lockfile_source"
+} > "$sources_path"
 
-printf 'Platform: %s\nArchitecture: %s\nVersion: %s\nExecutable: %s\nChecksum: %s\n' \
-    "$platform" "$architecture" "$version" "$release_binary_path" "$release_binary_path.sha256"
+printf 'Platform: %s\nArchitecture: %s\nVersion: %s\nExecutable: %s\nChecksum: %s\nLicense: %s\nThird-party notices: %s\nSources: %s\n' \
+    "$platform" "$architecture" "$version" "$release_binary_path" "$release_binary_path.sha256" \
+    "$license_path" "$notices_path" "$sources_path"

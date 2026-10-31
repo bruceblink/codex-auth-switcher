@@ -149,6 +149,17 @@ jobs:
             exit 1
           }
 
+      - name: Verify release tag commit
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_commit=$(git rev-parse HEAD)
+          [[ "$head_commit" == "$GITHUB_SHA" ]] || {
+            echo "Checked out commit $head_commit does not match release tag commit $GITHUB_SHA." >&2
+            exit 1
+          }
+
       - name: Build and package Windows release
         if: runner.os == 'Windows'
         shell: pwsh
@@ -215,6 +226,36 @@ jobs:
         with:
           name: codex-auth-switcher-${{ matrix.platform }}-${{ matrix.architecture }}-checksum
           path: ${{ matrix.binary_glob }}.sha256
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload GPL license
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-auth-switcher-linux-license
+          path: dist/LICENSE
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload third-party notices
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-auth-switcher-linux-third-party-notices
+          path: dist/THIRD-PARTY-NOTICES.html
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload source and build information
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-auth-switcher-linux-sources
+          path: dist/SOURCES.txt
           archive: false
           if-no-files-found: error
           retention-days: 90

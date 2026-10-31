@@ -6,6 +6,8 @@ $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $manifestPath = Join-Path $repositoryRoot "Cargo.toml"
 $binaryPath = Join-Path $repositoryRoot "target\release\codex-auth-switcher.exe"
+$licenseSource = Join-Path $repositoryRoot "LICENSE"
+$noticesSource = Join-Path $repositoryRoot "THIRD-PARTY-NOTICES.html"
 
 $compiler = & rustc -vV
 if ($LASTEXITCODE -ne 0) {
@@ -17,6 +19,70 @@ if ($target -notmatch "^(x86_64|aarch64)-pc-windows-msvc$") {
     throw "Packaging requires a Windows MSVC target; found '$target'."
 }
 $rustflagsConfig = "target.$target.rustflags=['-C','target-feature=+crt-static']"
+
+$metadataJson = & cargo metadata --no-deps --format-version 1 --manifest-path $manifestPath
+if ($LASTEXITCODE -ne 0) {
+    throw "Cargo metadata could not be read."
+}
+$metadata = $metadataJson | ConvertFrom-Json
+$package = $metadata.packages | Where-Object { $_.name -eq "switcher-desktop" } | Select-Object -First 1
+if ($null -eq $package) {
+    throw "The desktop package version could not be read."
+}
+
+$architecture = if ($target.StartsWith("x86_64-")) { "x64" } else { "arm64" }
+$outputPath = [System.IO.Path]::GetFullPath($OutputDirectory)
+New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
+$binaryName = "codex-auth-switcher-v$($package.version)-windows-$architecture.exe"
+$releaseBinaryPath = Join-Path $outputPath $binaryName
+$binaryChecksumPath = "$releaseBinaryPath.sha256"
+$licensePath = Join-Path $outputPath "LICENSE"
+$noticesPath = Join-Path $outputPath "THIRD-PARTY-NOTICES.html"
+$sourcesPath = Join-Path $outputPath "SOURCES.txt"
+
+foreach ($source in @($licenseSource, $noticesSource)) {
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw "A required source notice is missing: $source"
+    }
+}
+$outputFiles = @($releaseBinaryPath, $binaryChecksumPath, $licensePath, $noticesPath, $sourcesPath)
+$existingOutput = @($outputFiles | Where-Object { Test-Path -LiteralPath $_ })
+if ($existingOutput.Count -gt 0) {
+    throw "The release output already exists. Choose another output directory or move the previous output."
+}
+
+$sourceCommit = $null
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $commitOutput = & git -C $repositoryRoot rev-parse --verify HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $commitOutput.Count -gt 0) {
+        $candidateCommit = ($commitOutput -join "").Trim()
+        if ($candidateCommit -match "^[0-9a-f]{40}$") {
+            $sourceCommit = $candidateCommit
+        }
+    }
+}
+$expectedTag = "v$($package.version)"
+$sourceCode = if ($null -ne $sourceCommit) {
+    "$($package.repository)/tree/$sourceCommit"
+} else {
+    $package.repository
+}
+$lockfileSource = if ($null -ne $sourceCommit) {
+    "Cargo.lock at the source commit"
+} else {
+    "Cargo.lock from the selected repository revision"
+}
+$sourceLines = @("Source code: $sourceCode")
+if ($null -ne $sourceCommit) {
+    $sourceLines += "Source commit: $sourceCommit"
+}
+$sourceLines += @(
+    "Expected version tag: $expectedTag (tag creation is not assumed)"
+    "Build command: cargo build --release --locked"
+    "Dependency lockfile: $lockfileSource"
+)
+$sourcesText = $sourceLines -join "`n"
+$sourcesText += "`n"
 
 Push-Location $repositoryRoot
 try {
@@ -33,48 +99,31 @@ if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
     throw "The release executable was not produced."
 }
 
-$metadataJson = & cargo metadata --no-deps --format-version 1 --manifest-path $manifestPath
-if ($LASTEXITCODE -ne 0) {
-    throw "Cargo metadata could not be read."
-}
-$metadata = $metadataJson | ConvertFrom-Json
-$package = $metadata.packages | Where-Object { $_.name -eq "switcher-desktop" } | Select-Object -First 1
-if ($null -eq $package) {
-    throw "The desktop package version could not be read."
-}
-
-$architecture = if ($target.StartsWith("x86_64-")) { "x64" } else { "arm64" }
-
-$outputPath = [System.IO.Path]::GetFullPath($OutputDirectory)
-New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
-$binaryName = "codex-auth-switcher-v$($package.version)-windows-$architecture.exe"
-$releaseBinaryPath = Join-Path $outputPath $binaryName
-$binaryChecksumPath = "$releaseBinaryPath.sha256"
-if ((Test-Path -LiteralPath $releaseBinaryPath) -or
-    (Test-Path -LiteralPath $binaryChecksumPath)) {
-    throw "The release output already exists. Choose another output directory or move the previous output."
-}
-
 try {
     Copy-Item -LiteralPath $binaryPath -Destination $releaseBinaryPath
 
     $binaryHash = (Get-FileHash -LiteralPath $releaseBinaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $binaryChecksum = "$binaryHash  $binaryName"
     [System.IO.File]::WriteAllText($binaryChecksumPath, $binaryChecksum, [System.Text.UTF8Encoding]::new($false))
+    Copy-Item -LiteralPath $licenseSource -Destination $licensePath
+    Copy-Item -LiteralPath $noticesSource -Destination $noticesPath
+    [System.IO.File]::WriteAllText($sourcesPath, $sourcesText, [System.Text.UTF8Encoding]::new($false))
 
     [pscustomobject]@{
         Binary = $releaseBinaryPath
         BinarySha256 = $binaryHash
+        License = $licensePath
+        ThirdPartyNotices = $noticesPath
+        Sources = $sourcesPath
         Target = $target
         Version = $package.version
     }
 }
 catch {
-    if (Test-Path -LiteralPath $releaseBinaryPath) {
-        Remove-Item -LiteralPath $releaseBinaryPath
-    }
-    if (Test-Path -LiteralPath $binaryChecksumPath) {
-        Remove-Item -LiteralPath $binaryChecksumPath
+    foreach ($path in $outputFiles) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path
+        }
     }
     throw
 }
