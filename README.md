@@ -30,7 +30,7 @@ cargo build --release --locked
 - 模式快照会保留 Codex 的模型详细度、自动压缩设置、模型指令文件、审查模型以及 ChatGPT/OSS provider 字段；旧存档缺少这些字段时沿用活动配置。
 - API key 只从输入框或已保存认证读取。程序不会读取 `AUTOCODE_API_KEY` 或 provider 的 `env_key` 环境变量。输入框里的密钥成功应用后，程序会写入 Windows 当前用户的持久环境变量 `AUTOCODE_API_KEY`；切换失败时不会写入。预览会显示认证来源，不显示密钥。应用后输入内容会清除。
 - 没有 `auth.json` 时，工具不会生成占位认证。订阅认证由用户在 Codex 中登录生成；API key 认证在用户输入有效格式的 key 并应用后生成。
-- “Codex 模型目录”可以维护 `config.toml` 中 `model_catalog_json` 指定的本地目录。相对路径以 `config.toml` 所在目录为基准。新增条目会复制所选模型的其他能力字段。保存前会检查字段和重复 ID，并在目录文件旁创建不覆盖的备份；检测到文件或配置路径变化时会拒绝保存。未指定时工具不会把缓存当成可编辑配置；Codex 的配置文件或启动参数可能覆盖主配置。
+- “Codex 模型目录”可以读取已配置的本地目录，也可以选择已有 JSON 文件。选择文件后，工具只更新当前活动模式的 `model_catalog_json`，保留另一模式的路径。相对路径以 `config.toml` 所在目录为基准。新增条目会复制所选模型的其他能力字段。保存前会检查字段和重复 ID，并在目录文件旁创建不覆盖的备份；检测到文件或配置路径变化时会拒绝保存。工具不会把缓存当成可编辑配置；Codex 的配置文件或启动参数可能覆盖主配置。
 - 本地模式存档位于 `.codex/auth-switcher-v2/`。`modes.enc` 与 `pending.enc` 使用 AES-256-GCM；`vault.key` 与密文分开保存。
 - 配置变化时生成的 `config.toml.bak-*` 只保存当前模式参数和选中 provider，不复制共享设置或凭据。活动配置中的共享设置保持不变。
 - Windows 状态目录只允许当前用户和 SYSTEM 访问。密钥缺失、密文认证失败或外部文件冲突时，程序停止并保留现有数据。
@@ -64,12 +64,8 @@ PNG 用于 X11 窗口；Windows ICO 通过 `build.rs` 和 `embed-resource` 以�
 
 ## 文档
 
-- [认证模式恢复历史计划](docs/02-auth-mode-recovery-plan.md)
-- [技术重评](docs/03-technology-review.md)
+- [Rust + GPUI Kit 开发计划](docs/01-development-plan.md)
+- [用户指南](docs/06-v2-user-guide.md)
 - [第一版验证历史](docs/04-v1-validation.md)
-- [Rust + egui 开发计划](docs/08-v2-egui-development-plan.md)
-- [GPUI Kit 桌面迁移计划](docs/09-gpui-kit-migration-plan.md)
-- [V2 用户指南](docs/06-v2-user-guide.md)
-- [egui 与 gpui-kit 维护成本评估](docs/07-egui-maintenance-evaluation.md)
 
-第一版开发和验证文档只作为历史记录，不代表仓库仍维护 Python 代码。当前项目仅支持 Windows 文件认证存储，不支持系统钥匙串、跨账户迁移或无人值守登录。
+第一版验证记录仅保留历史证据。当前项目只维护 Rust + GPUI Kit 桌面程序，不包含 Python 第一版或命令行界面。当前认证存储使用 Codex 文件认证；不支持系统钥匙串、跨账户迁移或无人值守登录。
