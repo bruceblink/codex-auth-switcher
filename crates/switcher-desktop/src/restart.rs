@@ -82,6 +82,11 @@ mod windows {
         processes: BTreeMap<u32, ProcessHandle>,
     }
 
+    struct RunningProcess {
+        parent_id: u32,
+        handle: ProcessHandle,
+    }
+
     struct WindowSearch {
         executable: String,
         windows: Vec<HWND>,
@@ -92,18 +97,44 @@ mod windows {
         let app = installed_app()?;
         let old_windows = app_windows(&app.executable)?;
         let running_processes = running_app_processes(&app.executable)?;
-        let old_pids: BTreeSet<u32> = old_windows.processes.keys().copied().collect();
-        if running_processes
+        let window_process_ids: BTreeSet<u32> = old_windows.processes.keys().copied().collect();
+        let process_parents = running_processes
             .iter()
+            .map(|(process_id, process)| (*process_id, process.parent_id))
+            .collect();
+        let old_pids = process_family(&process_parents, &window_process_ids);
+        if running_processes
+            .keys()
             .any(|process_id| !old_pids.contains(process_id))
         {
             return Err(Error(
                 "Codex is running without an open desktop window. Exit it from the system tray, then retry.",
             ));
         }
-        close_and_wait(old_windows)?;
+        close_and_wait(old_windows, &running_processes, &old_pids)?;
         activate(&app.aumid)?;
         wait_for_window(&app.executable, &old_pids)
+    }
+
+    fn process_family(
+        process_parents: &BTreeMap<u32, u32>,
+        window_process_ids: &BTreeSet<u32>,
+    ) -> BTreeSet<u32> {
+        // Electron child processes share the executable but usually have no top-level window.
+        let mut family = window_process_ids.clone();
+        loop {
+            let children: Vec<u32> = process_parents
+                .iter()
+                .filter(|(process_id, parent_id)| {
+                    !family.contains(process_id) && family.contains(parent_id)
+                })
+                .map(|(process_id, _)| *process_id)
+                .collect();
+            if children.is_empty() {
+                return family;
+            }
+            family.extend(children);
+        }
     }
 
     fn installed_app() -> Result<CodexApp> {
@@ -232,7 +263,7 @@ if ($null -eq $application) { exit 11 }
         })
     }
 
-    fn running_app_processes(executable: &Path) -> Result<BTreeSet<u32>> {
+    fn running_app_processes(executable: &Path) -> Result<BTreeMap<u32, RunningProcess>> {
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
             return Err(Error("Could not inspect running Codex desktop processes."));
@@ -249,7 +280,7 @@ if ($null -eq $application) { exit 11 }
             return Err(Error("Could not inspect running Codex desktop processes."));
         }
 
-        let mut process_ids = BTreeSet::new();
+        let mut processes = BTreeMap::new();
         loop {
             let name_length = entry
                 .szExeFile
@@ -262,14 +293,20 @@ if ($null -eq $application) { exit 11 }
                 .eq_ignore_ascii_case(expected_name)
             {
                 let process_id = entry.th32ProcessID;
-                let handle =
-                    unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+                let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+                let handle = unsafe { OpenProcess(access, 0, process_id) };
                 if !handle.is_null() {
-                    let _process = ProcessHandle(handle);
-                    if process_image_path(handle).is_some_and(|path| {
+                    let process = ProcessHandle(handle);
+                    if process_image_path(process.0).is_some_and(|path| {
                         path.eq_ignore_ascii_case(&executable.to_string_lossy())
                     }) {
-                        process_ids.insert(process_id);
+                        processes.insert(
+                            process_id,
+                            RunningProcess {
+                                parent_id: entry.th32ParentProcessID,
+                                handle: process,
+                            },
+                        );
                     }
                 }
             }
@@ -277,7 +314,7 @@ if ($null -eq $application) { exit 11 }
                 break;
             }
         }
-        Ok(process_ids)
+        Ok(processes)
     }
 
     unsafe extern "system" fn collect_app_windows(hwnd: HWND, context: LPARAM) -> i32 {
@@ -325,7 +362,11 @@ if ($null -eq $application) { exit 11 }
         )
     }
 
-    fn close_and_wait(app: AppWindows) -> Result<()> {
+    fn close_and_wait(
+        app: AppWindows,
+        running_processes: &BTreeMap<u32, RunningProcess>,
+        family_ids: &BTreeSet<u32>,
+    ) -> Result<()> {
         if app.windows.is_empty() {
             return Ok(());
         }
@@ -337,9 +378,15 @@ if ($null -eq $application) { exit 11 }
             }
         }
         let deadline = Instant::now() + CLOSE_TIMEOUT;
-        for process in app.processes.values() {
+        let process_handles = app.processes.values().map(|process| process.0).chain(
+            running_processes
+                .iter()
+                .filter(|(process_id, _)| family_ids.contains(process_id))
+                .map(|(_, process)| process.handle.0),
+        );
+        for handle in process_handles {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() || wait_process(process.0, remaining)? == WAIT_TIMEOUT {
+            if remaining.is_zero() || wait_process(handle, remaining)? == WAIT_TIMEOUT {
                 return Err(Error(
                     "Codex did not exit within 15 seconds. Save your work, close it manually, and retry.",
                 ));
@@ -444,9 +491,43 @@ if ($null -eq $application) { exit 11 }
         }
 
         #[test]
+        fn process_family_includes_descendants_but_excludes_independent_roots() {
+            let process_parents = BTreeMap::from([(200, 100), (300, 200), (400, 100), (500, 900)]);
+            let window_process_ids = BTreeSet::from([100]);
+
+            assert_eq!(
+                process_family(&process_parents, &window_process_ids),
+                BTreeSet::from([100, 200, 300, 400])
+            );
+            assert!(process_family(&process_parents, &BTreeSet::new()).is_empty());
+        }
+
+        #[test]
         fn normal_close_waits_for_a_controlled_native_window_process() -> Result<()> {
             const CHILD_ENV: &str = "CODEX_AUTH_SWITCHER_RESTART_TEST_WINDOW";
+            const DESCENDANT_ENV: &str = "CODEX_AUTH_SWITCHER_RESTART_TEST_DESCENDANT";
             if std::env::var_os(CHILD_ENV).is_some() {
+                if std::env::var_os(DESCENDANT_ENV).is_some() {
+                    thread::sleep(Duration::from_secs(8));
+                    return Ok(());
+                }
+                let executable = std::env::current_exe()
+                    .map_err(|_| Error("Could not start the controlled child process."))?;
+                let _descendant = Command::new(&executable)
+                    .args([
+                        "--exact",
+                        "restart::windows::tests::normal_close_waits_for_a_controlled_native_window_process",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(CHILD_ENV, "1")
+                    .env(DESCENDANT_ENV, "1")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn()
+                    .map_err(|_| Error("Could not start the controlled child process."))?;
                 let message = wide("Controlled Codex restart test window");
                 let title = wide("Test window");
                 unsafe {
@@ -501,11 +582,61 @@ if ($null -eq $application) { exit 11 }
                 return Err(Error("The controlled native window did not appear."));
             };
 
-            if let Err(error) = close_and_wait(child_windows) {
+            let descendant_deadline = Instant::now() + Duration::from_secs(5);
+            let mut running_processes = None;
+            while Instant::now() < descendant_deadline {
+                let candidate = match running_app_processes(&executable) {
+                    Ok(candidate) => candidate,
+                    Err(error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                };
+                if candidate.iter().any(|(process_id, process)| {
+                    *process_id != child.id() && process.parent_id == child.id()
+                }) {
+                    running_processes = Some(candidate);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            let Some(running_processes) = running_processes else {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error("The controlled child process was not discovered."));
+            };
+            let window_process_ids: BTreeSet<u32> =
+                child_windows.processes.keys().copied().collect();
+            let process_parents = running_processes
+                .iter()
+                .map(|(process_id, process)| (*process_id, process.parent_id))
+                .collect();
+            let family_ids = process_family(&process_parents, &window_process_ids);
+            let Some(descendant_handle) = running_processes
+                .iter()
+                .find(|(_, process)| process.parent_id == child.id())
+                .map(|(_, process)| process.handle.0)
+            else {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error("The controlled child process was not discovered."));
+            };
+            if wait_process(descendant_handle, Duration::ZERO)? != WAIT_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error("The controlled child process exited too early."));
+            }
+
+            if let Err(error) = close_and_wait(child_windows, &running_processes, &family_ids) {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(error);
             }
+            assert_eq!(
+                wait_process(descendant_handle, Duration::ZERO)?,
+                WAIT_OBJECT_0
+            );
             let status = child
                 .wait()
                 .map_err(|_| Error("Could not confirm the controlled window test exited."))?;
