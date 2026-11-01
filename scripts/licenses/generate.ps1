@@ -34,6 +34,7 @@ try {
     $noticePath = Join-Path $repositoryRoot "THIRD-PARTY-NOTICES.html"
     $notice = [System.IO.File]::ReadAllText($noticePath)
     $notice = $notice.Replace("`r`n", "`n").Replace("`r", "`n")
+    $notice = [System.Text.RegularExpressions.Regex]::Replace($notice, '(?m)[\t ]+$', "")
     [System.IO.File]::WriteAllText($noticePath, $notice, [System.Text.UTF8Encoding]::new($false))
 } finally {
     Pop-Location

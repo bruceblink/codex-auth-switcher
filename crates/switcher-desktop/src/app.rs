@@ -6,6 +6,8 @@
 
 mod catalog;
 mod format;
+mod update;
+mod update_view;
 mod view;
 
 #[cfg(test)]
@@ -22,6 +24,7 @@ use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 use switcher_core::{
     ImportSources, Mode, Paths, PreparedSwitch, Status, Store, SwitchOptions, config,
 };
+use update::UpdateController;
 use zeroize::Zeroizing;
 
 type CoreResult<T> = switcher_core::Result<T>;
@@ -82,6 +85,7 @@ pub(crate) enum MainTab {
     Switch,
     Review,
     Models,
+    Update,
 }
 
 /// The one GPUI entity backing the application window.
@@ -109,17 +113,28 @@ pub(crate) struct Switcher {
     pub(crate) review_scroll: ScrollHandle,
     pub(crate) catalog_scroll: ScrollHandle,
     pub(crate) model_list_scroll: ScrollHandle,
+    pub(crate) update_scroll: ScrollHandle,
+    pub(crate) updater: UpdateController,
     restart_handler: Arc<dyn Fn() -> CoreResult<()> + Send + Sync>,
 }
 
 impl Switcher {
     pub(crate) fn new(store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_dialogs(store, FileDialogs::system(), window, cx)
+        let mut this = Self::with_update_controller(
+            store,
+            FileDialogs::system(),
+            UpdateController::system(),
+            window,
+            cx,
+        );
+        this.load_update_preferences(window, cx, true);
+        this
     }
 
-    pub(crate) fn with_dialogs(
+    pub(crate) fn with_update_controller(
         store: Store,
         file_dialogs: FileDialogs,
+        updater: UpdateController,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -185,6 +200,8 @@ impl Switcher {
             review_scroll: ScrollHandle::default(),
             catalog_scroll: ScrollHandle::default(),
             model_list_scroll: ScrollHandle::default(),
+            update_scroll: ScrollHandle::default(),
+            updater,
             restart_handler: Arc::new(crate::restart::restart),
         };
         this.refresh(window, cx);

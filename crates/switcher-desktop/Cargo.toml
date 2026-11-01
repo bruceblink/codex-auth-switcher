@@ -17,16 +17,19 @@ workspace = true
 switcher-core = { path = "../switcher-core" }
 gpui-kit.workspace = true
 anyhow.workspace = true
+chrono.workspace = true
 directories.workspace = true
 fs2.workspace = true
+futures = "0.3"
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 rfd = "0.15"
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
-serde_json.workspace = true
-tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

@@ -29,9 +29,11 @@ if ($subsystem -ne 2) {
 }
 $script:TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) "codex-auth-switcher-native-ui-$([guid]::NewGuid().ToString('N'))"
 $script:CodexHome = Join-Path $script:TestRoot "codex-home"
+$script:SwitcherData = Join-Path $script:TestRoot "switcher-data"
 $script:OriginalPath = $env:PATH
 $script:EnvironmentNames = @(
     "CODEX_HOME",
+    "CODEX_AUTH_SWITCHER_DATA_DIR",
     "AUTOCODE_API_KEY",
     "AUTOCODE_BASE_URL",
     "CODEX_API_PROVIDER",
@@ -285,6 +287,12 @@ function Wait-ForMode([string]$Mode, [string]$ExpectedModel) {
 try {
     New-Item -ItemType Directory -Path $script:TestRoot | Out-Null
     New-Item -ItemType Directory -Path $script:CodexHome | Out-Null
+    New-Item -ItemType Directory -Path $script:SwitcherData | Out-Null
+    [System.IO.File]::WriteAllText(
+        (Join-Path $script:SwitcherData "update-preferences.json"),
+        "{`"auto_check`":false,`"last_successful_check`":null}`n",
+        [System.Text.UTF8Encoding]::new($false)
+    )
 
     # Seed only synthetic active files and backups; start the release GUI without arguments.
     $subscriptionConfig = @'
@@ -369,6 +377,7 @@ public static class NativeUiInput
         [Environment]::SetEnvironmentVariable($name, $null, "Process")
     }
     $env:CODEX_HOME = $script:CodexHome
+    $env:CODEX_AUTH_SWITCHER_DATA_DIR = $script:SwitcherData
     $env:PATH = Join-Path $env:SystemRoot "System32"
     $script:Process = Start-Process -FilePath $script:ExecutablePath -PassThru
 

@@ -1,6 +1,7 @@
+use gpui_kit::assets::IconName;
 use gpui_kit::base::{InteractiveElementExt as _, Scrollbar, ScrollbarMode};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, WindowExt as _,
+    ActiveTheme, Disableable, Icon, Selectable, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::{DialogAction, DialogClose, DialogFooter},
     input::Input,
@@ -56,15 +57,20 @@ impl Render for Switcher {
             }
             MainTab::Review => root.child(self.review_workspace(can_apply, cx)),
             MainTab::Models => root.child(self.catalog_workspace(wide, cx)),
+            MainTab::Update => root.child(self.update_workspace(cx)),
         };
 
-        root.child(self.footer(
-            can_preview,
-            can_apply,
-            can_restart,
-            restart_block_reason,
-            cx,
-        ))
+        if self.tab == MainTab::Update {
+            root.child(self.update_footer(cx))
+        } else {
+            root.child(self.footer(
+                can_preview,
+                can_apply,
+                can_restart,
+                restart_block_reason,
+                cx,
+            ))
+        }
     }
 }
 
@@ -148,7 +154,7 @@ impl Switcher {
                     .icon(IconName::Replace)
                     .label("切换配置")
                     .accessibility_label("切换配置")
-                    .selected(self.tab != MainTab::Models)
+                    .selected(matches!(self.tab, MainTab::Switch | MainTab::Review))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab = if this.prepared.is_some() {
                             MainTab::Review
@@ -167,6 +173,31 @@ impl Switcher {
                     .selected(self.tab == MainTab::Models)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab = MainTab::Models;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("update-tab")
+                    .compact()
+                    .icon(IconName::Download)
+                    .label(
+                        if self.updater.update_attention && self.tab != MainTab::Update {
+                            "软件更新 •"
+                        } else {
+                            "软件更新"
+                        },
+                    )
+                    .accessibility_label(
+                        if self.updater.update_attention && self.tab != MainTab::Update {
+                            "软件更新，有可用版本"
+                        } else {
+                            "软件更新"
+                        },
+                    )
+                    .selected(self.tab == MainTab::Update)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tab = MainTab::Update;
+                        this.updater.update_attention = false;
                         cx.notify();
                     })),
             )
@@ -1028,6 +1059,7 @@ impl Switcher {
                         ),
                 )
                 .child(self.restart_button(can_restart, cx)),
+            MainTab::Update => div(),
         };
         let mut footer = div()
             .px_5()
@@ -1076,6 +1108,7 @@ impl Switcher {
                     footer = footer.child(hint(reason, true));
                 }
             }
+            MainTab::Update => {}
         }
         if self.restart_needed && self.tab != MainTab::Review {
             footer = footer.child(hint("配置已更新。重启 Codex 后将加载最新设置。", false));
@@ -1159,7 +1192,10 @@ fn section_label(label: &'static str, cx: &Context<Switcher>) -> impl IntoElemen
         .child(label)
 }
 
-fn scrollbar_overlay(id: &'static str, handle: &gpui_kit::ScrollHandle) -> impl IntoElement {
+pub(super) fn scrollbar_overlay(
+    id: &'static str,
+    handle: &gpui_kit::ScrollHandle,
+) -> impl IntoElement {
     div().absolute().inset_0().child(
         Scrollbar::vertical(handle)
             .id(id)

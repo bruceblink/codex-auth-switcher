@@ -1,19 +1,191 @@
-use super::{DialogFuture, FileDialogs, MainTab, Switcher};
+use super::{
+    DialogFuture, FileDialogs, MainTab, Switcher,
+    update::{
+        AvailableView, CheckResult, LastSuccessfulCheck, UpdateBackend, UpdateController,
+        UpdateFailure, UpdateHandoff, UpdateInstaller, UpdatePackageKind, UpdatePreferences,
+        UpdatePreferencesStore, UpdateStatus,
+    },
+};
+use futures::channel::oneshot;
 use gpui_kit::{
     AnyWindowHandle, AppContext, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
     point, px, size,
     test::{TestAppContextExt, TestWindowExt},
 };
 use std::{
+    collections::VecDeque,
     fs,
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
-use switcher_core::{Mode, Paths, Store};
+use switcher_core::{
+    Mode, Paths, Store,
+    update::{CancellationToken, DownloadProgress, DownloadedUpdate, UpdateAsset},
+};
+
+type TestUpdateFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+type DownloadResult = Result<DownloadedUpdate, UpdateFailure>;
+
+enum DownloadBehavior {
+    Immediate(DownloadResult),
+    Pending(oneshot::Receiver<DownloadResult>),
+}
+
+#[derive(Default)]
+struct TestUpdateBackend {
+    checks: Mutex<VecDeque<Result<CheckResult, UpdateFailure>>>,
+    pending_check: Mutex<Option<oneshot::Receiver<Result<CheckResult, UpdateFailure>>>>,
+    downloads: Mutex<VecDeque<DownloadBehavior>>,
+    verification_failures: Mutex<VecDeque<UpdateFailure>>,
+    cancellation: Mutex<Option<CancellationToken>>,
+    verify_calls: AtomicUsize,
+}
+
+impl TestUpdateBackend {
+    fn new(
+        checks: impl IntoIterator<Item = Result<CheckResult, UpdateFailure>>,
+        downloads: impl IntoIterator<Item = DownloadBehavior>,
+    ) -> Self {
+        Self {
+            checks: Mutex::new(checks.into_iter().collect()),
+            pending_check: Mutex::new(None),
+            downloads: Mutex::new(downloads.into_iter().collect()),
+            verification_failures: Mutex::new(VecDeque::new()),
+            cancellation: Mutex::new(None),
+            verify_calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl UpdateBackend for TestUpdateBackend {
+    fn check(&self) -> TestUpdateFuture<Result<CheckResult, UpdateFailure>> {
+        if let Some(receiver) = self
+            .pending_check
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            return Box::pin(async move {
+                receiver.await.unwrap_or_else(|_| {
+                    Err(UpdateFailure {
+                        message: "test update check response was dropped".to_owned(),
+                        cancelled: false,
+                    })
+                })
+            });
+        }
+        let result = self
+            .checks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop_front()
+            .unwrap_or_else(|| {
+                Err(UpdateFailure {
+                    message: "test update response queue is empty".to_owned(),
+                    cancelled: false,
+                })
+            });
+        Box::pin(async move { result })
+    }
+
+    fn download(
+        &self,
+        _asset: Option<UpdateAsset>,
+        cancellation: CancellationToken,
+        on_progress: Arc<dyn Fn(DownloadProgress) + Send + Sync + 'static>,
+    ) -> TestUpdateFuture<DownloadResult> {
+        *self
+            .cancellation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(cancellation);
+        let behavior = self
+            .downloads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop_front()
+            .unwrap_or_else(|| {
+                DownloadBehavior::Immediate(Err(UpdateFailure {
+                    message: "test download response queue is empty".to_owned(),
+                    cancelled: false,
+                }))
+            });
+        Box::pin(async move {
+            on_progress(DownloadProgress {
+                received_bytes: 512,
+                total_bytes: 1024,
+            });
+            match behavior {
+                DownloadBehavior::Immediate(result) => result,
+                DownloadBehavior::Pending(receiver) => receiver.await.unwrap_or_else(|_| {
+                    Err(UpdateFailure {
+                        message: "test download response was dropped".to_owned(),
+                        cancelled: false,
+                    })
+                }),
+            }
+        })
+    }
+
+    fn verify_download(
+        &self,
+        _asset: Option<UpdateAsset>,
+        path: PathBuf,
+    ) -> TestUpdateFuture<Result<DownloadedUpdate, UpdateFailure>> {
+        self.verify_calls.fetch_add(1, Ordering::SeqCst);
+        let failure = self
+            .verification_failures
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop_front();
+        Box::pin(async move {
+            if let Some(failure) = failure {
+                return Err(failure);
+            }
+            Ok(DownloadedUpdate {
+                path,
+                from_cache: true,
+            })
+        })
+    }
+}
+
+#[derive(Default)]
+struct TestUpdateInstaller {
+    calls: AtomicUsize,
+    last_path: Mutex<Option<PathBuf>>,
+    last_package_kind: Mutex<Option<UpdatePackageKind>>,
+}
+
+impl UpdateInstaller for TestUpdateInstaller {
+    fn handoff(
+        &self,
+        path: &Path,
+        _expected_name: &str,
+        _cache_directory: &Path,
+        package_kind: UpdatePackageKind,
+    ) -> Result<UpdateHandoff, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        *self
+            .last_path
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(path.to_path_buf());
+        *self
+            .last_package_kind
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(package_kind);
+        Ok(match package_kind {
+            UpdatePackageKind::Installer => UpdateHandoff::SystemOpenerStarted,
+            UpdatePackageKind::AppImage => UpdateHandoff::AppImageDirectoryOpened,
+            UpdatePackageKind::Dmg => UpdateHandoff::SystemOpenerStarted,
+        })
+    }
+}
 
 fn open(
     cx: &mut TestAppContext,
@@ -40,6 +212,24 @@ fn open_with_dialogs(
     height: f32,
     dialogs: FileDialogs,
 ) -> (AnyWindowHandle, Entity<Switcher>) {
+    open_with_update_controller(
+        cx,
+        home,
+        width,
+        height,
+        dialogs,
+        UpdateController::disabled(),
+    )
+}
+
+fn open_with_update_controller(
+    cx: &mut TestAppContext,
+    home: PathBuf,
+    width: f32,
+    height: f32,
+    dialogs: FileDialogs,
+    updater: UpdateController,
+) -> (AnyWindowHandle, Entity<Switcher>) {
     let paths = Paths::resolve(Some(home))
         .unwrap_or_else(|error| panic!("cannot resolve test directory: {error}"));
     cx.update(gpui_kit::init);
@@ -60,7 +250,15 @@ fn open_with_dialogs(
             },
             app,
             |window, app| {
-                app.new(|cx| Switcher::with_dialogs(Store::isolated(paths), dialogs, window, cx))
+                app.new(|cx| {
+                    Switcher::with_update_controller(
+                        Store::isolated(paths),
+                        dialogs,
+                        updater,
+                        window,
+                        cx,
+                    )
+                })
             },
         )
         .unwrap_or_else(|error| panic!("cannot open GPUI test window: {error}"))
@@ -71,6 +269,13 @@ fn open_with_dialogs(
 async fn idle(cx: &mut TestAppContext, window: AnyWindowHandle, app: &Entity<Switcher>) {
     cx.wait_for(window, Duration::from_secs(3), |_, cx| !app.read(cx).busy)
         .await;
+}
+
+async fn update_idle(cx: &mut TestAppContext, window: AnyWindowHandle, app: &Entity<Switcher>) {
+    cx.wait_for(window, Duration::from_secs(3), |_, cx| {
+        !app.read(cx).updater.status_is_active() && !app.read(cx).updater.preferences_saving
+    })
+    .await;
 }
 
 fn click(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) {
@@ -135,6 +340,443 @@ fn configure_catalog_path(config_path: &Path, catalog_path: &Path) {
         format!("model_catalog_json = \"{catalog_path}\"\n{config}"),
     )
     .unwrap_or_else(|error| panic!("cannot configure test model catalog: {error}"));
+}
+
+#[test]
+fn automatic_check_repeats_for_available_updates_old_records_and_future_timestamps() {
+    let version = env!("CARGO_PKG_VERSION").to_owned();
+    let recent = 10_000;
+    let preferences = |latest_version: Option<String>, unix_seconds| UpdatePreferences {
+        auto_check: true,
+        last_successful_check: Some(LastSuccessfulCheck {
+            installed_version: version.clone(),
+            unix_seconds,
+            latest_version,
+        }),
+    };
+    let controller = |preferences| {
+        UpdateController::isolated(PathBuf::from("update-test-data"), None, preferences)
+    };
+
+    assert!(
+        !controller(preferences(Some(version.clone()), recent)).auto_check_is_due(recent + 100)
+    );
+    assert!(
+        controller(preferences(Some("99.0.0".to_owned()), recent)).auto_check_is_due(recent + 100)
+    );
+    assert!(
+        controller(preferences(None, recent)).auto_check_is_due(recent + 100),
+        "records written before latest_version was stored must be rechecked"
+    );
+    assert!(
+        controller(preferences(Some(version.clone()), recent + 1_000)).auto_check_is_due(recent),
+        "a future timestamp must not defer automatic checks"
+    );
+
+    let old_record: UpdatePreferences = serde_json::from_str(&format!(
+        r#"{{"auto_check":true,"last_successful_check":{{"installed_version":"{version}","unix_seconds":{recent}}}}}"#
+    ))
+    .unwrap_or_else(|error| panic!("cannot read old update preferences: {error}"));
+    assert_eq!(
+        old_record
+            .last_successful_check
+            .as_ref()
+            .and_then(|last| last.latest_version.as_deref()),
+        None
+    );
+
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let store = UpdatePreferencesStore::at(temp.path().join("update-preferences.json"));
+    let first_save = preferences(Some(version.clone()), recent);
+    store
+        .save(&first_save)
+        .unwrap_or_else(|error| panic!("cannot save update preferences: {error}"));
+    assert_eq!(
+        store
+            .load()
+            .unwrap_or_else(|error| panic!("cannot load update preferences: {error}")),
+        first_save
+    );
+    let second_save = UpdatePreferences::default();
+    store
+        .save(&second_save)
+        .unwrap_or_else(|error| panic!("cannot replace update preferences: {error}"));
+    assert_eq!(
+        store
+            .load()
+            .unwrap_or_else(|error| panic!("cannot reload update preferences: {error}")),
+        second_save
+    );
+}
+
+#[gpui_kit::test]
+async fn update_check_keeps_focus_and_long_notes_scroll_at_small_window(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let data_directory = temp.path().join("application-data");
+    let (check_sender, check_receiver) = oneshot::channel();
+    let notes = (0..40)
+        .map(|index| format!("## 更新内容 {index}\n\n说明文字，保留版本更新的完整内容。"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let backend = Arc::new(TestUpdateBackend::new([], []));
+    *backend
+        .pending_check
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(check_receiver);
+    let installer = Arc::new(TestUpdateInstaller::default());
+    let updater = UpdateController::isolated_with_installer(
+        data_directory,
+        Some(backend),
+        UpdatePreferences::default(),
+        installer,
+    );
+    let (window, app) = open_with_update_controller(
+        cx,
+        home,
+        720.,
+        560.,
+        test_dialogs(Arc::new(|| Box::pin(async { None }) as DialogFuture)),
+        updater,
+    );
+    idle(cx, window, &app).await;
+    click(cx, window, "update-tab");
+    click(cx, window, "update-check");
+    click(cx, window, "switch-tab");
+    check_sender
+        .send(Ok(CheckResult::Available(
+            AvailableView::test_value_with_notes(notes),
+        )))
+        .unwrap_or_else(|_| panic!("update check stopped before test response"));
+    update_idle(cx, window, &app).await;
+    assert_eq!(app.read_with(cx, |view, _| view.tab), MainTab::Switch);
+    assert!(app.read_with(cx, |view, _| view.updater.update_attention));
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("update-tab").label(),
+            Some("软件更新，有可用版本"),
+            "a newly discovered update should be visible without changing tabs"
+        );
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect update attention label: {error}"));
+
+    click(cx, window, "update-tab");
+    assert!(!app.read_with(cx, |view, _| view.updater.update_attention));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let scroll = app.read(cx).update_scroll.clone();
+        assert!(scroll.max_offset().y > px(0.));
+        let before = scroll.offset().y;
+        let bounds = scroll.bounds();
+        window.drag(
+            point(bounds.right() - px(8.), bounds.top() + px(12.)),
+            point(bounds.right() - px(8.), bounds.bottom() - px(12.)),
+            cx,
+        );
+        assert!(
+            scroll.offset().y < before,
+            "dragging the update scrollbar should move long release notes"
+        );
+        assert_buttons_fit_without_overlap(
+            window,
+            cx,
+            &["update-release-notes", "update-check-again"],
+        );
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect update page scrolling: {error}"));
+}
+
+#[gpui_kit::test]
+async fn update_install_requires_confirmation_and_rechecks_the_cached_file(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let data_directory = temp.path().join("application-data");
+    let mut update = AvailableView::test_value();
+    update.package.name = "Codex-Auth-Switcher-0.4.0-macos-arm64.dmg".to_owned();
+    let package_path = data_directory
+        .join("update-cache")
+        .join(&update.package.name);
+    fs::create_dir_all(
+        package_path
+            .parent()
+            .unwrap_or_else(|| panic!("package path has no parent")),
+    )
+    .unwrap_or_else(|error| panic!("cannot create update cache: {error}"));
+    fs::write(&package_path, b"synthetic verified package")
+        .unwrap_or_else(|error| panic!("cannot write update package: {error}"));
+
+    let backend = Arc::new(TestUpdateBackend::new(
+        [Ok(CheckResult::Available(update))],
+        [DownloadBehavior::Immediate(Ok(DownloadedUpdate {
+            path: package_path.clone(),
+            from_cache: false,
+        }))],
+    ));
+    let installer = Arc::new(TestUpdateInstaller::default());
+    let updater = UpdateController::isolated_with_installer(
+        data_directory,
+        Some(backend.clone()),
+        UpdatePreferences::default(),
+        installer.clone(),
+    );
+    let (window, app) = open_with_update_controller(
+        cx,
+        home,
+        720.,
+        560.,
+        test_dialogs(Arc::new(|| Box::pin(async { None }) as DialogFuture)),
+        updater,
+    );
+    idle(cx, window, &app).await;
+    click(cx, window, "update-tab");
+    click(cx, window, "update-check");
+    update_idle(cx, window, &app).await;
+    click(cx, window, "update-download");
+    update_idle(cx, window, &app).await;
+
+    assert!(matches!(
+        app.read_with(cx, |view, _| view.updater.status.clone()),
+        UpdateStatus::Ready { .. }
+    ));
+    cx.update_window(window, |_, window, cx| {
+        assert_buttons_fit_without_overlap(
+            window,
+            cx,
+            &[
+                "update-release-notes",
+                "update-install",
+                "update-open-package",
+                "update-check-again",
+            ],
+        );
+        let scroll = app.read(cx).update_scroll.clone();
+        scroll.scroll_to_top_of_item(6);
+        window.render_frame(cx);
+        let hash = window.find("update-package-sha256");
+        assert!(
+            hash.visible(),
+            "the SHA-256 label should be visible after scrolling to the package summary"
+        );
+        assert!(
+            hash.bounds().left() >= px(0.) && hash.bounds().right() <= window.viewport_size().width,
+            "the SHA-256 label should stay within the window"
+        );
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect update action layout: {error}"));
+    cx.update_window(window, |_, window, _cx| {
+        assert_eq!(
+            window.find("update-install").label(),
+            Some("重新校验并打开 DMG，以手动替换应用程序")
+        );
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect the DMG update action: {error}"));
+
+    click(cx, window, "update-install");
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.verify_calls.load(Ordering::SeqCst), 0);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("confirm-update-install").visible());
+        window.press("escape", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot cancel update confirmation: {error}"));
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("dialog").is_none()
+    })
+    .await;
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.verify_calls.load(Ordering::SeqCst), 0);
+
+    click(cx, window, "update-install");
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("confirm-update-install").is_some()
+    })
+    .await;
+    assert_eq!(
+        {
+            let mut label = None;
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                label = window
+                    .find("confirm-update-install")
+                    .label()
+                    .map(str::to_owned);
+            })
+            .unwrap_or_else(|error| panic!("cannot inspect DMG confirmation: {error}"));
+            label
+        },
+        Some("打开 DMG".to_owned())
+    );
+    click(cx, window, "confirm-update-install");
+    update_idle(cx, window, &app).await;
+    assert_eq!(backend.verify_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *installer
+            .last_path
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+        Some(package_path)
+    );
+    assert_eq!(
+        *installer
+            .last_package_kind
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+        Some(UpdatePackageKind::Dmg)
+    );
+    assert!(app.read_with(cx, |view, _| {
+        view.updater.message().contains("已打开")
+            && view.updater.message().contains("DMG")
+            && view.updater.message().contains("手动替换")
+            && !view.updater.message().contains("已启动")
+    }));
+
+    backend
+        .verification_failures
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push_back(UpdateFailure {
+            message: format!(
+                "安装包 SHA-256 校验失败。请重新下载后再试。{}",
+                "更新服务器连接失败，请检查网络后重试。".repeat(4)
+            ),
+            cancelled: false,
+        });
+    click(cx, window, "update-install");
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("confirm-update-install").is_some()
+    })
+    .await;
+    click(cx, window, "confirm-update-install");
+    update_idle(cx, window, &app).await;
+    assert_eq!(backend.verify_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 1);
+    assert!(app.read_with(cx, |view, _| {
+        matches!(
+            &view.updater.status,
+            UpdateStatus::FailedDownload { message, .. }
+                if message.contains("请重新下载") && !message.contains("已清理")
+        )
+    }));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let message = window.find("update-message");
+        assert!(
+            message.bounds().size.height > px(20.),
+            "a long update error should wrap to more than one line"
+        );
+        assert!(message.bounds().right() <= window.viewport_size().width);
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect wrapped update error: {error}"));
+}
+
+#[gpui_kit::test]
+async fn update_install_preserves_drafts_and_cancel_cleanup_errors(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let data_directory = temp.path().join("application-data");
+    let update = AvailableView::test_value();
+    let (download_cancel, download_pending) = oneshot::channel();
+    let backend = Arc::new(TestUpdateBackend::new(
+        [],
+        [DownloadBehavior::Pending(download_pending)],
+    ));
+    let installer = Arc::new(TestUpdateInstaller::default());
+    let mut updater = UpdateController::isolated_with_installer(
+        data_directory.clone(),
+        Some(backend.clone()),
+        UpdatePreferences::default(),
+        installer.clone(),
+    );
+    updater.status = UpdateStatus::Ready {
+        update: update.clone(),
+        path: data_directory
+            .join("update-cache")
+            .join(&update.package.name),
+    };
+    let (window, app) = open_with_update_controller(
+        cx,
+        home,
+        720.,
+        560.,
+        test_dialogs(Arc::new(|| Box::pin(async { None }) as DialogFuture)),
+        updater,
+    );
+    idle(cx, window, &app).await;
+    click(cx, window, "update-tab");
+
+    cx.update_window(window, |_, window, cx| {
+        let key = app.read(cx).key.clone();
+        key.update(cx, |state, cx| {
+            state.set_value("synthetic-unsaved-update-key", window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot set synthetic API key: {error}"));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("update-install").disabled(), Some(true));
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect update draft guard: {error}"));
+    assert!(app.read_with(cx, |view, cx| {
+        view.key.read(cx).value() == "synthetic-unsaved-update-key"
+    }));
+    app.update(cx, |this, cx| {
+        let message = this
+            .install_block_reason(cx)
+            .unwrap_or_else(|| panic!("API key draft did not block update installation"));
+        assert!(message.contains("API key"));
+    });
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 0);
+
+    cx.update_window(window, |_, window, cx| {
+        let key = app.read(cx).key.clone();
+        key.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot clear synthetic API key: {error}"));
+    app.update(cx, |this, cx| {
+        this.catalog.dirty = true;
+        let message = this
+            .install_block_reason(cx)
+            .unwrap_or_else(|| panic!("dirty model catalog did not block update installation"));
+        assert!(message.contains("模型目录"));
+    });
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 0);
+
+    app.update(cx, |this, _| {
+        this.catalog.dirty = false;
+        this.updater.status = UpdateStatus::Available(update);
+    });
+    click(cx, window, "update-download");
+    click(cx, window, "update-cancel");
+    assert!(
+        backend
+            .cancellation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    );
+    download_cancel
+        .send(Err(UpdateFailure {
+            message: "取消下载后清理缓存失败。".to_owned(),
+            cancelled: true,
+        }))
+        .unwrap_or_else(|_| panic!("download task stopped before cleanup error was delivered"));
+    update_idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| {
+        view.updater.message().contains("取消下载后清理缓存失败") && view.updater.operation_error
+    }));
+    assert_eq!(installer.calls.load(Ordering::SeqCst), 0);
 }
 
 #[gpui_kit::test]

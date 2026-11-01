@@ -1,5 +1,5 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-//! A standalone GPUI Kit desktop application. No remote requests.
+//! GPUI Kit desktop application with local configuration and release updates.
 mod app;
 #[cfg(test)]
 mod demo;

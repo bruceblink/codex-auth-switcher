@@ -92,6 +92,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             build-essential \
+            ca-certificates \
             clang \
             cmake \
             libasound2-dev \
@@ -117,6 +118,7 @@ jobs:
             libxrandr-dev \
             libzstd-dev \
             ninja-build \
+            openssl \
             pkg-config
 
       - name: Check formatting
@@ -130,3 +132,8 @@ jobs:
 
       - name: Run workspace tests
         run: cargo test --workspace --locked
+
+      - name: Test update downloads with local Docker HTTPS
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: ./scripts/update/test-local-integration.ps1

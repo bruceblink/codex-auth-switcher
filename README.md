@@ -18,7 +18,17 @@ Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust + GPUI K
 
 安装包包含 GPLv3 文本、第三方许可通知和源码说明。使用步骤见[用户指南](docs/06-v2-user-guide.md)。安装和卸载不删除 Codex 配置、认证或模式存档。
 
-Windows 主流程已完成真实窗口验证。Linux 和 macOS 的真实桌面交互尚待验收，构建和包结构测试不能代替此检查。Windows 安装包未使用证书签名；macOS 使用临时签名，未进行 Apple 公证。应用内更新功能正在接入。自动重启 Codex 和用户环境变量持久化目前只支持 Windows；其他平台请手动重启，认证仍保存到所选目录的 `auth.json`。
+Windows 主流程已完成真实窗口验证。Linux 和 macOS 的真实桌面交互尚待验收，构建和包结构测试不能代替此检查。Windows 安装包未使用证书签名；macOS 使用临时签名，未进行 Apple 公证。自动重启 Codex 和用户环境变量持久化目前只支持 Windows；其他平台请手动重启，认证仍保存到所选目录的 `auth.json`。
+
+## 软件更新
+
+在“软件更新”页检查稳定版本、查看发布说明并下载当前平台的安装包。发布版默认在启动后延迟检查。确认当前已是最新版后，24 小时内不重复自动检查；发现新版后，下次启动仍会检查并提示。可以关闭自动检查，也可以随时手动检查。调试构建不自动联网。
+
+下载支持进度显示、取消和重试。客户端核对安装包的大小与 SHA-256，重新使用缓存前也会核对文件。校验通过后可打开安装包目录；Windows 和 Debian 包还可点击“安装更新”，确认后启动系统安装器。macOS 点击“打开 DMG”，挂载后关闭旧版，再将应用拖入 Applications 替换。AppImage 使用下载目录中的文件替换已有版本，文件保留执行权限。
+
+启动安装器或打开更新文件前，程序会再次校验文件。配置操作进行中，或存在待应用预览、未保存的模型改动、API key 输入时，程序阻止这一步。程序不会在后台自动安装或重启 Codex。旧版本若没有更新清单，界面提供发布页，不能把未校验文件当成已验证下载。已发布的 `v0.3.0` 没有软件更新功能，首次升级需要从 Release 页手动下载并安装新版。
+
+更新偏好和缓存位于系统应用数据目录，与 `CODEX_HOME`、认证和模式存档分开。可用 `CODEX_AUTH_SWITCHER_DATA_DIR` 指定独立的应用数据目录。该目录包含 `update-preferences.json` 和 `update-cache/`。更新请求仅访问本项目的 GitHub Release；更新客户端不读取或发送 Codex 认证、API key 或配置内容。
 
 ## 本机构建
 
@@ -50,7 +60,7 @@ cargo build --release --locked
 - 本地模式存档位于 `.codex/auth-switcher-v2/`。`modes.enc` 与 `pending.enc` 使用 AES-256-GCM；`vault.key` 与密文分开保存。
 - 配置变化时生成的 `config.toml.bak-*` 只保存当前模式参数和选中 provider，不复制共享设置或凭据。活动配置中的共享设置保持不变。
 - Windows 状态目录只允许当前用户和 SYSTEM 访问。密钥缺失、密文认证失败或外部文件冲突时，程序停止并保留现有数据。
-- Codex 使用的 `auth.json` 继续采用 Codex 格式。程序不会向远程 API 发送请求，也不会验证认证是否有效。
+- Codex 使用的 `auth.json` 继续采用 Codex 格式。程序不会向 Codex 或 OpenAI 服务发送认证请求，也不会验证认证是否有效。软件更新使用独立的 GitHub 下载客户端。
 - 文件检查不能锁住 Codex 自身。切换前请关闭 Codex；切换后重启 Codex 并新建会话。
 
 旧 DPAPI 存档和第一版 Python 程序不由当前版本读取。若第一版留有未完成的 `pending.dpapi` 写入，先按历史版本流程恢复，再使用当前版本。
@@ -61,9 +71,12 @@ cargo build --release --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+pwsh -File scripts/update/test-local-integration.ps1
 .\scripts\package-windows.ps1
 .\scripts\test-v2-native-ui.ps1
 ```
+
+更新下载集成测试需要 PowerShell 7、OpenSSL 和本地 Docker。Windows 可以使用 Docker Desktop 或 WSL 中的 Docker；测试生成临时 HTTPS 证书，只让测试客户端信任该证书，并在结束后清理容器。
 
 Linux/macOS 本地打包可运行 `./scripts/package-unix.sh`，或对应的 `./scripts/package-linux.sh`、`./scripts/package-macos.sh`。Windows 安装与卸载测试使用 `.\scripts\package-windows.ps1 -SmokeTest`，测试会拒绝覆盖现有安装。
 

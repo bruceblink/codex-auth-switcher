@@ -158,12 +158,18 @@ $workPath = [System.IO.Path]::GetFullPath($WorkDirectory)
 $smokeDirectory = Join-Path $workPath "smoke-test"
 $installDirectory = Join-Path $smokeDirectory "install"
 $codexHome = Join-Path $smokeDirectory "isolated-codex-home"
+$switcherData = Join-Path $smokeDirectory "isolated-switcher-data"
 $installLog = Join-Path $smokeDirectory "install.log"
 $uninstallLog = Join-Path $smokeDirectory "uninstall.log"
 if (Test-Path -LiteralPath $smokeDirectory) {
     throw "The isolated installer test directory already exists: $smokeDirectory"
 }
-New-Item -ItemType Directory -Path $installDirectory, $codexHome -Force | Out-Null
+New-Item -ItemType Directory -Path $installDirectory, $codexHome, $switcherData -Force | Out-Null
+[System.IO.File]::WriteAllText(
+    (Join-Path $switcherData "update-preferences.json"),
+    "{`"auto_check`":false,`"last_successful_check`":null}`n",
+    [System.Text.UTF8Encoding]::new($false)
+)
 $syntheticCodexData = [ordered]@{
     "config.toml" = "model = `"gpt-5.6`"`n"
     "auth.json" = "{}`n"
@@ -178,6 +184,7 @@ foreach ($name in $syntheticCodexData.Keys) {
 $installed = $false
 $applicationProcess = $null
 $previousCodexHome = [Environment]::GetEnvironmentVariable("CODEX_HOME", "Process")
+$previousSwitcherData = [Environment]::GetEnvironmentVariable("CODEX_AUTH_SWITCHER_DATA_DIR", "Process")
 try {
     $installed = $true
     Invoke-CheckedProcess `
@@ -226,6 +233,7 @@ try {
     Assert-File -Path $desktopShortcut -Description "Optional desktop shortcut"
 
     [Environment]::SetEnvironmentVariable("CODEX_HOME", $codexHome, "Process")
+    [Environment]::SetEnvironmentVariable("CODEX_AUTH_SWITCHER_DATA_DIR", $switcherData, "Process")
     $applicationProcess = Start-Process -FilePath $installedExecutable -WorkingDirectory $installDirectory -PassThru
     $windowReady = $false
     for ($attempt = 0; $attempt -lt 80; $attempt++) {
@@ -278,6 +286,7 @@ try {
 }
 finally {
     [Environment]::SetEnvironmentVariable("CODEX_HOME", $previousCodexHome, "Process")
+    [Environment]::SetEnvironmentVariable("CODEX_AUTH_SWITCHER_DATA_DIR", $previousSwitcherData, "Process")
     if ($null -ne $applicationProcess) {
         $applicationProcess.Refresh()
         if (-not $applicationProcess.HasExited) {

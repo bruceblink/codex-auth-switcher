@@ -7,6 +7,7 @@ mod files;
 #[cfg(windows)]
 mod permissions;
 mod store;
+pub mod update;
 
 pub use store::{
     CodexModel, ImportSources, ModeStatus, ModelCatalog, ModelCatalogSaveResult, PreparedSwitch,
