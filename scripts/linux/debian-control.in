@@ -1,0 +1,12 @@
+Package: codex-auth-switcher
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Codex Auth Switcher Maintainers <opensource@bruceblink.com>
+Installed-Size: @INSTALLED_SIZE@
+Depends: ca-certificates, @RUNTIME_DEPENDENCIES@
+Homepage: https://github.com/bruceblink/codex-auth-switcher
+Description: Manage Codex authentication profiles and model catalog
+ Codex Auth Switcher provides a desktop application to switch Codex
+ authentication profiles and manage the model catalog.

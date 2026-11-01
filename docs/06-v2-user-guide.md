@@ -1,10 +1,19 @@
 # Codex Auth Switcher 用户指南
 
-本指南适用于 Windows x64 便携包。运行程序不需要 Python、Rust 或 Ramag。
+本指南适用于 Rust + GPUI Kit 桌面程序。运行程序不需要 Python、Rust 或 Ramag。
+
+## 安装
+
+- Windows：运行 `Codex-Auth-Switcher-<version>-windows-x64-setup.exe`，按向导安装到当前用户目录。安装完成后从开始菜单启动。
+- Debian/Ubuntu：使用系统包管理器安装 `Codex-Auth-Switcher-<version>-linux-amd64.deb`，再从应用菜单启动。
+- 其他 Linux x64：为 `Codex-Auth-Switcher-<version>-linux-x86_64.AppImage` 添加执行权限后运行。
+- macOS：按处理器下载 `-macos-arm64.dmg` 或 `-macos-x86_64.dmg`。挂载后把应用拖入 Applications，再从该目录启动。
+
+下载后请用同一版本的 `SHA256SUMS.txt` 检查文件。当前安装包没有 Windows 证书签名或 macOS 公证。若系统阻止运行，请核对来源与校验值，不要关闭系统安全保护。历史版本 `v0.3.0` 是原始可执行文件，不包含安装向导。
 
 ## 开始使用
 
-1. 运行对应平台的原始可执行文件。Windows 文件名为 `codex-auth-switcher-v<version>-windows-x64.exe`；Linux 和 macOS 文件名包含平台及架构。Windows Release 不再生成 ZIP。
+1. 启动已安装的 Codex Auth Switcher。Windows Release 使用图形子系统，不会额外打开终端窗口。
 2. 检查“配置目录”。默认值来自 `CODEX_HOME` 或 `%USERPROFILE%\.codex`。
 3. 首次使用时点击“创建默认配置”；已有配置时点击“初始化模式”或“补齐模式”。工具读取当前 `config.toml`、`auth.json` 和可识别的备份文件。
 4. 检查“当前实际模式”。它显示磁盘上的认证模式。“模式存档”列出已保存的订阅和 API key 参数，不代表当前选择的目标已生效。
@@ -57,4 +66,6 @@ API key 输入框会遮盖输入内容，并显示首尾提示。程序只使用
 
 ## 卸载
 
-本便携程序不安装服务、启动项或系统级组件。卸载时删除程序文件即可。加密模式存档保留在 Codex 配置目录中，避免误删认证状态。
+Windows 使用系统“已安装的应用”中的卸载入口；Debian/Ubuntu 使用包管理器移除；macOS 删除 Applications 中的应用；AppImage 删除下载文件即可。
+
+卸载不删除 Codex 配置目录、`auth.json`、加密模式存档或模型文件。安装程序不添加后台服务或开机启动项。

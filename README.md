@@ -1,18 +1,32 @@
 # Codex Auth Switcher
 
-Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust + GPUI Kit 图形界面版本，提供 Windows x64、Linux x64、macOS ARM64 和 macOS x64 可执行文件。
+Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust + GPUI Kit 图形界面版本，提供 Windows x64、Linux x64、macOS ARM64 和 macOS x64 安装包。
 
 工具恢复 `config.toml` 的模式参数和 `auth.json` 的认证。工具不依赖、不修改 `autocode.config.toml`。MCP、项目、插件、代理和其他共享设置保留当前值。
 
 ## 下载与启动
 
-从 [GitHub Releases](https://github.com/bruceblink/codex-auth-switcher/releases) 下载对应平台的原始可执行文件和 SHA-256 文件，并保留同一版本的 `LICENSE`、`THIRD-PARTY-NOTICES.html` 和 `SOURCES.txt`。Windows 直接运行 `codex-auth-switcher-v<version>-windows-x64.exe`，不会打开终端窗口。Linux 和 macOS 下载后需赋予可执行权限。使用步骤见[用户指南](docs/06-v2-user-guide.md)。
+从 [GitHub Releases](https://github.com/bruceblink/codex-auth-switcher/releases) 下载对应平台的安装包，并用同一版本的 `SHA256SUMS.txt` 核对文件。当前开发版本使用以下格式；已发布的 `v0.3.0` 继续保留原始可执行文件。
 
-Windows 已完成真实窗口验证。Linux 和 macOS 产物经过原生构建、自动测试、文件格式和架构校验，尚未完成真实桌面的交互验收。程序未签名，不包含安装程序和自动更新。自动重启 Codex 和用户环境变量持久化目前只支持 Windows；其他平台请手动重启，认证仍保存到所选目录的 `auth.json`。
+| 平台 | 安装文件 | 启动方式 |
+| --- | --- | --- |
+| Windows x64 | `Codex-Auth-Switcher-<version>-windows-x64-setup.exe` | 按向导安装，从开始菜单启动 |
+| Linux x64，Debian/Ubuntu | `Codex-Auth-Switcher-<version>-linux-amd64.deb` | 用系统包管理器安装，从应用菜单启动 |
+| Linux x64，AppImage | `Codex-Auth-Switcher-<version>-linux-x86_64.AppImage` | 赋予执行权限后运行 |
+| macOS Apple Silicon | `Codex-Auth-Switcher-<version>-macos-arm64.dmg` | 挂载后把应用拖入 Applications |
+| macOS Intel | `Codex-Auth-Switcher-<version>-macos-x86_64.dmg` | 挂载后把应用拖入 Applications |
+
+安装包包含 GPLv3 文本、第三方许可通知和源码说明。使用步骤见[用户指南](docs/06-v2-user-guide.md)。安装和卸载不删除 Codex 配置、认证或模式存档。
+
+Windows 主流程已完成真实窗口验证。Linux 和 macOS 的真实桌面交互尚待验收，构建和包结构测试不能代替此检查。Windows 安装包未使用证书签名；macOS 使用临时签名，未进行 Apple 公证。应用内更新功能正在接入。自动重启 Codex 和用户环境变量持久化目前只支持 Windows；其他平台请手动重启，认证仍保存到所选目录的 `auth.json`。
 
 ## 本机构建
 
-需要 Rust stable 工具链和 Windows MSVC 构建工具。`rust-toolchain.toml` 会为本地开发和 CI 选择最新 stable 的 Rust、Clippy 和 rustfmt 版本。
+需要 Rust stable 工具链。`rust-toolchain.toml` 会为本地开发和 CI 选择最新 stable 的 Rust、Clippy 和 rustfmt 版本。
+
+- Windows：安装 x64 MSVC、Windows SDK 和 CMake。打包脚本会检查构建环境并准备固定版本的 Inno Setup。
+- Linux：使用 Ubuntu 24.04 的编译工具、Clang、CMake、Ninja、pkg-config，以及 GTK 3、WebKitGTK 4.1、OpenSSL、ALSA、X11 和 Wayland 开发库。打包还需要 `dpkg-dev`、`patchelf`、`squashfs-tools` 和 `desktop-file-utils`。完整安装命令位于 CI 工作流。
+- macOS：安装 Xcode 命令行工具和当前架构的 Rust stable target。打包使用系统的 `iconutil`、`codesign` 和 `hdiutil`。
 
 ```powershell
 cargo run --locked
@@ -51,9 +65,11 @@ cargo test --workspace --locked
 .\scripts\test-v2-native-ui.ps1
 ```
 
-Linux/macOS 本地打包可运行 `./scripts/package-unix.sh`。GitHub Actions 在 Windows、Linux 和 macOS 运行格式检查、Clippy、workspace 测试，并上传各平台的原始 Release 可执行文件和 SHA-256 校验文件。工作流不生成 ZIP 或 tar.gz；Windows runner 还会运行原生窗口验收，原生验收只使用临时目录和合成认证数据。
+Linux/macOS 本地打包可运行 `./scripts/package-unix.sh`，或对应的 `./scripts/package-linux.sh`、`./scripts/package-macos.sh`。Windows 安装与卸载测试使用 `.\scripts\package-windows.ps1 -SmokeTest`，测试会拒绝覆盖现有安装。
 
-CI 结构参考 [Ramag Desktop CI](https://github.com/bruceblink/ramag-platform/blob/ec0307090b19363db134dfce9d151b2627689e79/.github/workflows/desktop-ci.yml)。质量检查和发布构建分开，Actions 使用固定提交，Cargo 下载缓存按系统和架构隔离。`Release executables` 工作流可通过 `v*` 标签或手动操作构建 Windows x64、Linux x64、macOS ARM64 和 macOS x64 的原始文件；它不直接创建 GitHub Release。发布前须核对目标提交、各平台结果与 SHA-256。
+CI 参考 [Ramag Desktop CI](https://github.com/bruceblink/ramag-platform/blob/59399356bc88f215c8eacca632dcb3e13953632a/.github/workflows/desktop-ci.yml) 和同一提交的发布流程，按本项目的包名、图标、许可证和源码说明适配。质量检查与发布打包分开。Actions 固定提交，Cargo 下载缓存按系统和架构隔离。四种平台运行格式、全目标 check、严格 Clippy 和 workspace 测试；对应平台另外检查实际安装包。
+
+正式标签必须与 Cargo 版本一致。发布任务核对五个安装包，生成总校验文件和 `update-manifest.json`，再发布 GitHub Release。安装产物不使用 ZIP 或 tar.gz；GitHub 自动生成的源码归档不属于应用安装包。Windows 原生 UI 验收只使用临时目录和合成认证数据。
 
 窗口图标以 `crates/switcher-desktop/assets/codex-auth-switcher.svg` 为源图。使用 `resvg 0.46.0` 渲染 PNG，再用 `Pillow 12.3.0` 从 PNG 生成包含 16、24、32、48、64、128 和 256 像素图像的 ICO。这两个工具只用于资源生成，不是程序运行时依赖。在仓库根目录运行以下命令可重建资源：
 
@@ -64,7 +80,7 @@ resvg --width 256 --height 256 crates/switcher-desktop/assets/codex-auth-switche
 python -c "from PIL import Image; Image.open('crates/switcher-desktop/assets/codex-auth-switcher.png').save('crates/switcher-desktop/assets/codex-auth-switcher.ico', format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
 ```
 
-PNG 用于 X11 窗口；Windows ICO 通过 `build.rs` 和 `embed-resource` 以资源 ID 1 编入 Release PE，Windows 打包脚本和 CI 的 Cargo 构建会自动包含它。macOS 当前发布原始可执行文件，不包含 `.app` 图标。
+PNG 用于 X11 窗口；Windows ICO 通过 `build.rs` 和 `embed-resource` 以资源 ID 1 编入 Release PE。macOS 打包时由 PNG 生成 ICNS，写入 DMG 内的 `.app`。打包脚本使用同一套图标资源。
 
 ## 许可证
 

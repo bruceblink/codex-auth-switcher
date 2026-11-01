@@ -13,7 +13,7 @@
 - `switcher-core` 负责 TOML 与 JSON 校验、模式存档、预览、文件写入、文件锁、备份和恢复。
 - `switcher-desktop` 使用 GPUI Kit 0.8.1 提供一个原生窗口。输入实体在界面状态更新时复用。文件、加密和进程操作在后台运行。渲染过程不执行文件访问，也不使用定时全量刷新。
 - Rust 工具链使用 stable。`rust-toolchain.toml`、CI 和本地构建均使用 stable、Clippy 和 rustfmt。
-- GitHub Actions 检查 Windows x64、Linux x64、macOS ARM64 和 macOS x64，并构建相应的原始可执行文件与 SHA-256 文件。
+- GitHub Actions 检查 Windows x64、Linux x64、macOS ARM64 和 macOS x64。打包脚本提供 Windows 安装向导、Linux `.deb`/`.AppImage` 和 macOS `.dmg`，发布流程生成统一 SHA-256 清单。Windows 已通过本机装卸测试；Unix 完整打包仍需对应 CI 验证。
 - Windows 支持原生重启 Codex；Linux 和 macOS 需要用户手动重启。单实例锁按当前 OS 用户生效，不受 `CODEX_HOME` 影响。
 - 程序不访问远程 API，不验证 API key 或订阅令牌。它不修改 `autocode.config.toml`，也不替换 Codex 的系统钥匙串认证。
 
@@ -60,7 +60,7 @@
 
 ### 后续验证范围
 
-1. **Windows 界面复核：** 主流程已在真实窗口验证 Tab、Shift+Tab、Enter、Space、重启对话框焦点限制和 Escape 取消，并验证 720 × 560 与 1040 × 740 的滚动。最后新增的确认页上下文、模型固定底栏和列表高度已通过 GPUI 布局测试；真实窗口复核时工具返回了与目标窗口不一致的截图，已停止输入，待工具恢复后补测。
+1. **Windows 界面复核：** 主流程已在真实窗口验证 Tab、Shift+Tab、Enter、Space、重启对话框焦点限制和 Escape 取消，并验证 720 × 560 与 1040 × 740 的滚动。窗口工具恢复后，已补测最终确认页中的目录、实际模式与目标方向，以及小窗口中模型列表高度、表单滚动和固定操作栏。全程使用隔离目录，显示缩放保持 100%。
 2. **跨平台真实窗口：** Linux 和 macOS 的原生窗口尚未完成视觉与交互验收。CI 构建或 headless 测试不能替代真实窗口检查。
 3. **代码签名：** 本次计划提供安装程序和更新下载，但不包含 Windows 证书签名与 macOS 公证。不得绕过系统安全提示，也不得声称已完成证书签名或公证。
 4. **模型目录的原生验收范围：** 自动测试覆盖文件选择、活动模式往返、无效文件、未保存编辑保护和失败恢复。Windows 真实窗口已验证选择、取消和未保存编辑保护；切换后的目录清理通过 GPUI 测试，真实窗口复核受到窗口控制错误影响，需继续补测。
@@ -69,8 +69,10 @@
 
 - 已修复手动切换配置目录时残留 API key、Provider 和地址的问题。同目录刷新保留未应用输入。
 - 已修复未保存模型编辑时仍可切换模式、切换后显示旧模式目录的问题。
-- `v0.3.0` 和重启修复提交的四平台质量与构建 CI 已通过。交互重设计后的格式检查、全目标 check、严格 Clippy、65 项测试和 Release 构建通过。Windows 真实窗口已完成隔离目录下的订阅/API 往返、预览返回与取消不写文件、模型保存与放弃、未保存改动保护及重启确认取消。
+- `v0.3.0`、重启修复和交互重设计提交的四平台质量与构建 CI 已通过。交互重设计提交为 `0a6a534`，CI 为 `41260569878`。本地格式检查、全目标 check、严格 Clippy、65 项测试和 Release 构建通过。Windows 真实窗口已完成隔离目录下的订阅/API 往返、预览返回与取消不写文件、模型保存与放弃、未保存改动保护及重启确认取消。
 - 当前本地 UI 构建 SHA-256 为 `e0061c0480e8d5e9c33b5d0019d34f2cbb9ba4673ca129c12ea70559600f5530`。后续安装包与软件更新修改需要重新构建和验证，不能把本次结果当作正式发布构件的证明。
+- Windows 安装器已通过本机当前用户安装、窗口启动、快捷方式、卸载记录和完整卸载测试。测试目录为 `target/windows-validation-20261101-03`，安装器大小为 6,570,841 字节，SHA-256 为 `b8948b13d3aa2c9966cee91ebd20014f0595c8d144ca873ca8a5bcd7298f4758`。合成 `config.toml` 与 `auth.json` 在装卸前后哈希一致。该安装器使用 `0a6a534` 的 Rust 源码，不是新正式版本。
+- WSL 中的 Linux/macOS 脚本逻辑测试、真实系统 ELF 的 Debian 依赖解析、ShellCheck、Bash 语法和合成发布聚合测试均通过。合成文件只验证发布清单处理，不能证明 Unix 安装包已经构建成功。
 - 仅发布经过验证的同一提交构件；下载后再次核对四个平台的 SHA-256，并核对正式标签、版本号和许可证文件。
 
 ## 验证
@@ -89,7 +91,7 @@ cargo build --release --locked
 Windows 打包和原生窗口测试：
 
 ```powershell
-.\scripts\package-windows.ps1
+.\scripts\package-windows.ps1 -SmokeTest
 .\scripts\test-v2-native-ui.ps1
 ```
 
@@ -97,9 +99,11 @@ Linux 与 macOS 打包：
 
 ```sh
 ./scripts/package-unix.sh
+./scripts/linux/package-tests.sh
+./scripts/macos/package-tests.sh
 ```
 
-CI 在四种目标平台运行格式检查、workspace check、Clippy 和测试。打包工作流验证二进制架构与 SHA-256。Windows 工作流另外运行隔离目录下的原生 UI 自动化。UI 验收记录必须区分 headless、Windows 真实窗口、Linux/macOS 真实窗口、发布构件和正式发布结果。
+CI 在四种目标平台运行格式检查、workspace check、Clippy 和测试。`Desktop Release` 在同一提交的质量检查通过后构建安装包，核对格式、架构、版本、包内文件和 SHA-256。Windows 工作流另外运行隔离目录下的原生 UI 自动化和受控安装、卸载测试。UI 验收记录必须区分 headless、Windows 真实窗口、Linux/macOS 真实窗口、发布构件和正式发布结果。
 
 ## 回滚
 

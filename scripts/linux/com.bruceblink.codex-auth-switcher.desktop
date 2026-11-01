@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Codex Auth Switcher
+Comment=Switch Codex authentication profiles and manage the model catalog
+Exec=codex-auth-switcher
+Icon=com.bruceblink.codex-auth-switcher
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=codex-auth-switcher

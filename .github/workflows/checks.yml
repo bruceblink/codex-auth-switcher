@@ -2,6 +2,8 @@ name: Cross-platform checks
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
 
 permissions:
@@ -16,22 +18,24 @@ env:
 
 jobs:
   quality:
-    name: Quality (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Four-platform quality checks
+    uses: ./.github/workflows/quality.yml
+    with:
+      ref: ${{ github.sha }}
+    permissions:
+      contents: read
+
+  package-windows:
+    name: Package (Windows x64)
+    needs: quality
+    runs-on: windows-2025
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - windows-2025
-          - ubuntu-24.04
-          - macos-15
-          - macos-15-intel
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Read Rust toolchain from rust-toolchain.toml
         id: rust-toolchain
@@ -46,10 +50,8 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.toolchain }}
-          components: clippy, rustfmt
 
       - name: Initialize and verify Windows MSVC/CMake environment
-        if: runner.os == 'Windows'
         shell: pwsh
         run: .\scripts\enable-windows-msvc.ps1
 
@@ -57,19 +59,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          host=$(rustc -vV | sed -n 's/^host: //p')
-          case "$RUNNER_OS/$RUNNER_ARCH" in
-            Windows/X64) expected_host=x86_64-pc-windows-msvc ;;
-            Linux/X64) expected_host=x86_64-unknown-linux-gnu ;;
-            macOS/ARM64) expected_host=aarch64-apple-darwin ;;
-            macOS/X64) expected_host=x86_64-apple-darwin ;;
-            *) echo "Unsupported runner architecture: $RUNNER_OS/$RUNNER_ARCH" >&2; exit 1 ;;
-          esac
-          [[ "$host" == "$expected_host" ]] || {
-            echo "Expected Rust host $expected_host, found $host." >&2
-            exit 1
-          }
-          rustc -Vv
+          host=$(rustup run stable rustc -vV | sed -n 's/^host: //p')
+          [[ "$host" == "x86_64-pc-windows-msvc" ]]
+          rustup run stable rustc -Vv
+          rustup run stable cargo -V
           uname -m
 
       - name: Restore Cargo download cache
@@ -82,8 +75,77 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Install Linux desktop build dependencies
-        if: runner.os == 'Linux'
+      - name: Prepare Inno Setup 6.7.4
+        shell: pwsh
+        run: .\scripts\windows\prepare-innosetup.ps1
+
+      - name: Build, install, launch, and uninstall the Windows package
+        shell: pwsh
+        run: .\scripts\package-windows.ps1 -SmokeTest
+
+      - name: Test the native Windows UI
+        shell: pwsh
+        run: .\scripts\test-v2-native-ui.ps1 -ExecutablePath .\target\release\codex-auth-switcher.exe
+
+      - name: Upload verified Windows package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-auth-switcher-windows-${{ github.run_id }}
+          path: |
+            target/windows-dist/Codex-Auth-Switcher-*-windows-x64-setup.exe
+            target/windows-dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 14
+
+  package-linux:
+    name: Package (Linux x86_64)
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Read Rust toolchain from rust-toolchain.toml
+        id: rust-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' rust-toolchain.toml)"
+          [[ -n "$toolchain" ]]
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.toolchain }}
+
+      - name: Report toolchain and architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          host=$(rustup run stable rustc -vV | sed -n 's/^host: //p')
+          [[ "$host" == "x86_64-unknown-linux-gnu" ]]
+          rustup run stable rustc -Vv
+          rustup run stable cargo -V
+          uname -m
+
+      - name: Restore Cargo download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install Linux desktop and package dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -92,6 +154,12 @@ jobs:
             build-essential \
             clang \
             cmake \
+            curl \
+            desktop-file-utils \
+            dpkg \
+            dpkg-dev \
+            file \
+            jq \
             libasound2-dev \
             libdbus-1-dev \
             libegl1-mesa-dev \
@@ -115,46 +183,58 @@ jobs:
             libxrandr-dev \
             libzstd-dev \
             ninja-build \
-            pkg-config
+            patchelf \
+            pkg-config \
+            shellcheck \
+            squashfs-tools \
+            xz-utils
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Check Linux and release scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck -x scripts/package-linux.sh scripts/package-metadata.sh scripts/linux/*.sh scripts/release/*.sh
+          bash scripts/linux/package-tests.sh
+          bash scripts/release/test-release-scripts.sh
 
-      - name: Check all workspace targets
-        run: cargo check --workspace --all-targets --locked
+      - name: Build and verify Linux packages
+        shell: bash
+        run: bash scripts/package-linux.sh
 
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Upload verified Linux packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-auth-switcher-linux-${{ github.run_id }}
+          path: |
+            target/linux-dist/Codex-Auth-Switcher-*-linux-amd64.deb
+            target/linux-dist/Codex-Auth-Switcher-*-linux-x86_64.AppImage
+            target/linux-dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 14
 
-      - name: Run workspace tests
-        run: cargo test --workspace --locked
-
-  package:
-    name: Package (${{ matrix.os }})
+  package-macos:
+    name: Package (macOS ${{ matrix.architecture }})
     needs: quality
-    runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2025
-            binary_arch: x86_64
-            binary_glob: dist/codex-auth-switcher-*-windows-*.exe
-          - os: ubuntu-24.04
-            binary_arch: x86_64
-            binary_glob: dist/codex-auth-switcher-*-linux-x64
           - os: macos-15
-            binary_arch: arm64
-            binary_glob: dist/codex-auth-switcher-*-macos-arm64
+            architecture: arm64
+            rust_target: aarch64-apple-darwin
           - os: macos-15-intel
-            binary_arch: x86_64
-            binary_glob: dist/codex-auth-switcher-*-macos-x64
+            architecture: x86_64
+            rust_target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Read Rust toolchain from rust-toolchain.toml
         id: rust-toolchain
@@ -165,34 +245,22 @@ jobs:
           [[ -n "$toolchain" ]]
           echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
 
-      - name: Install Rust stable toolchain
+      - name: Install Rust stable toolchain and target
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.toolchain }}
-
-      - name: Initialize and verify Windows MSVC/CMake environment
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: .\scripts\enable-windows-msvc.ps1
+          target: ${{ matrix.rust_target }}
 
       - name: Report toolchain and architecture
         shell: bash
         run: |
           set -euo pipefail
-          host=$(rustc -vV | sed -n 's/^host: //p')
-          case "$RUNNER_OS/$RUNNER_ARCH" in
-            Windows/X64) expected_host=x86_64-pc-windows-msvc ;;
-            Linux/X64) expected_host=x86_64-unknown-linux-gnu ;;
-            macOS/ARM64) expected_host=aarch64-apple-darwin ;;
-            macOS/X64) expected_host=x86_64-apple-darwin ;;
-            *) echo "Unsupported runner architecture: $RUNNER_OS/$RUNNER_ARCH" >&2; exit 1 ;;
-          esac
-          [[ "$host" == "$expected_host" ]] || {
-            echo "Expected Rust host $expected_host, found $host." >&2
-            exit 1
-          }
-          rustc -Vv
+          host=$(rustup run stable rustc -vV | sed -n 's/^host: //p')
+          [[ "$host" == "${{ matrix.rust_target }}" ]]
+          rustup run stable rustc -Vv
+          rustup run stable cargo -V
           uname -m
+          xcodebuild -version
 
       - name: Restore Cargo download cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -204,119 +272,22 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Install Linux desktop build dependencies
-        if: runner.os == 'Linux'
+      - name: Check macOS package scripts
         shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            build-essential \
-            clang \
-            cmake \
-            libasound2-dev \
-            libdbus-1-dev \
-            libegl1-mesa-dev \
-            libfontconfig1-dev \
-            libglib2.0-dev \
-            libgtk-3-dev \
-            libssl-dev \
-            libvulkan1 \
-            libwayland-dev \
-            libwebkit2gtk-4.1-dev \
-            libx11-dev \
-            libx11-xcb-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxcursor-dev \
-            libxinerama-dev \
-            libxi-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libxrandr-dev \
-            libzstd-dev \
-            ninja-build \
-            pkg-config
+        run: bash scripts/macos/package-tests.sh
 
-      - name: Build and package Windows release
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: .\scripts\package-windows.ps1
-
-      - name: Build and package Unix release
-        if: runner.os != 'Windows'
+      - name: Build and verify macOS package
         shell: bash
-        run: ./scripts/package-unix.sh
+        run: bash scripts/package-macos.sh --architecture "${{ matrix.architecture }}"
 
-      - name: Test packaged native Windows UI
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: .\scripts\test-v2-native-ui.ps1 -ExecutablePath .\target\release\codex-auth-switcher.exe
-
-      - name: Verify Windows executable checksum
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $binary = Get-ChildItem -Path '${{ matrix.binary_glob }}' | Select-Object -First 1
-          $checksum = Get-ChildItem -Path '${{ matrix.binary_glob }}.sha256' | Select-Object -First 1
-          $expected = (Get-Content -Raw -LiteralPath $checksum.FullName).Trim().Split()[0]
-          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $binary.FullName).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "Windows executable checksum mismatch." }
-
-      - name: Verify Unix executable checksum
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          checksum=$(compgen -G '${{ matrix.binary_glob }}.sha256' | head -n 1)
-          binary=${checksum%.sha256}
-          test -x "$binary"
-          file "$binary"
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            lipo "$binary" -verify_arch "${{ matrix.binary_arch }}"
-          else
-            readelf -h "$binary" | grep -q 'Advanced Micro Devices X86-64'
-          fi
-          cd dist
-          if command -v sha256sum >/dev/null 2>&1; then sha256sum -c "$(basename "$checksum")"; else shasum -a 256 -c "$(basename "$checksum")"; fi
-
-      - name: Upload raw executable
+      - name: Upload verified macOS package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          path: ${{ matrix.binary_glob }}
-          archive: false
+          name: codex-auth-switcher-macos-${{ matrix.architecture }}-${{ github.run_id }}
+          path: |
+            target/macos-dist/Codex-Auth-Switcher-*-macos-${{ matrix.architecture }}.dmg
+            target/macos-dist/SHA256SUMS.txt
           if-no-files-found: error
-
-      - name: Upload executable checksum
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          path: ${{ matrix.binary_glob }}.sha256
-          archive: false
-          if-no-files-found: error
-
-      - name: Upload GPL license
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: codex-auth-switcher-linux-license
-          path: dist/LICENSE
-          archive: false
-          if-no-files-found: error
-
-      - name: Upload third-party notices
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: codex-auth-switcher-linux-third-party-notices
-          path: dist/THIRD-PARTY-NOTICES.html
-          archive: false
-          if-no-files-found: error
-
-      - name: Upload source and build information
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: codex-auth-switcher-linux-sources
-          path: dist/SOURCES.txt
-          archive: false
-          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 14
