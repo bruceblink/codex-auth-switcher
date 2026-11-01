@@ -26,7 +26,6 @@ jobs:
           - windows-2025
           - ubuntu-24.04
           - macos-15
-          - macos-15-intel
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,7 +62,6 @@ jobs:
             Windows/X64) expected_host=x86_64-pc-windows-msvc ;;
             Linux/X64) expected_host=x86_64-unknown-linux-gnu ;;
             macOS/ARM64) expected_host=aarch64-apple-darwin ;;
-            macOS/X64) expected_host=x86_64-apple-darwin ;;
             *) echo "Unsupported runner architecture: $RUNNER_OS/$RUNNER_ARCH" >&2; exit 1 ;;
           esac
           [[ "$host" == "$expected_host" ]] || {

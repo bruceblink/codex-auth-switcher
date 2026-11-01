@@ -1,6 +1,6 @@
 # Codex Auth Switcher
 
-Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust + GPUI Kit 图形界面版本，提供 Windows x64、Linux x64、macOS ARM64 和 macOS x64 安装包。
+Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust + GPUI Kit 图形界面版本，提供 Windows x64、Linux x64 和 macOS ARM64 安装包。
 
 工具恢复 `config.toml` 的模式参数和 `auth.json` 的认证。工具不依赖、不修改 `autocode.config.toml`。MCP、项目、插件、代理和其他共享设置保留当前值。
 
@@ -14,7 +14,6 @@ Codex 的订阅与 API key 模式切换工具。本仓库只维护 Rust + GPUI K
 | Linux x64，Debian/Ubuntu | `Codex-Auth-Switcher-<version>-linux-amd64.deb` | 用系统包管理器安装，从应用菜单启动 |
 | Linux x64，AppImage | `Codex-Auth-Switcher-<version>-linux-x86_64.AppImage` | 赋予执行权限后运行 |
 | macOS Apple Silicon | `Codex-Auth-Switcher-<version>-macos-arm64.dmg` | 挂载后把应用拖入 Applications |
-| macOS Intel | `Codex-Auth-Switcher-<version>-macos-x86_64.dmg` | 挂载后把应用拖入 Applications |
 
 安装包包含 GPLv3 文本、第三方许可通知和源码说明。使用步骤见[用户指南](docs/06-v2-user-guide.md)。安装和卸载不删除 Codex 配置、认证或模式存档。
 
@@ -36,7 +35,7 @@ Windows 主流程已完成真实窗口验证。Linux 和 macOS 的真实桌面�
 
 - Windows：安装 x64 MSVC、Windows SDK 和 CMake。打包脚本会检查构建环境并准备固定版本的 Inno Setup。
 - Linux：使用 Ubuntu 24.04 的编译工具、Clang、CMake、Ninja、pkg-config，以及 GTK 3、WebKitGTK 4.1、OpenSSL、ALSA、X11 和 Wayland 开发库。打包还需要 `dpkg-dev`、`patchelf`、`squashfs-tools` 和 `desktop-file-utils`。完整安装命令位于 CI 工作流。
-- macOS：安装 Xcode 命令行工具和当前架构的 Rust stable target。打包使用系统的 `iconutil`、`codesign` 和 `hdiutil`。
+- macOS：安装 Xcode 命令行工具和 `aarch64-apple-darwin` Rust stable target。打包使用系统的 `iconutil`、`codesign` 和 `hdiutil`。
 
 ```powershell
 cargo run --locked
@@ -80,9 +79,9 @@ pwsh -File scripts/update/test-local-integration.ps1
 
 Linux/macOS 本地打包可运行 `./scripts/package-unix.sh`，或对应的 `./scripts/package-linux.sh`、`./scripts/package-macos.sh`。Windows 安装与卸载测试使用 `.\scripts\package-windows.ps1 -SmokeTest`，测试会拒绝覆盖现有安装。
 
-CI 参考 [Ramag Desktop CI](https://github.com/bruceblink/ramag-platform/blob/59399356bc88f215c8eacca632dcb3e13953632a/.github/workflows/desktop-ci.yml) 和同一提交的发布流程，按本项目的包名、图标、许可证和源码说明适配。质量检查与发布打包分开。Actions 固定提交，Cargo 下载缓存按系统和架构隔离。四种平台运行格式、全目标 check、严格 Clippy 和 workspace 测试；对应平台另外检查实际安装包。
+CI 参考 [Ramag Desktop CI](https://github.com/bruceblink/ramag-platform/blob/59399356bc88f215c8eacca632dcb3e13953632a/.github/workflows/desktop-ci.yml) 和同一提交的发布流程，按本项目的包名、图标、许可证和源码说明适配。质量检查与发布打包分开。Actions 固定提交，Cargo 下载缓存按系统和架构隔离。三种目标平台运行格式、全目标 check、严格 Clippy 和 workspace 测试；对应平台另外检查实际安装包。
 
-正式标签必须与 Cargo 版本一致。发布任务核对五个安装包，生成总校验文件和 `update-manifest.json`，再发布 GitHub Release。安装产物不使用 ZIP 或 tar.gz；GitHub 自动生成的源码归档不属于应用安装包。Windows 原生 UI 验收只使用临时目录和合成认证数据。
+正式标签必须与 Cargo 版本一致。发布任务核对四个安装包，生成总校验文件和 `update-manifest.json`，再发布 GitHub Release。安装产物不使用 ZIP 或 tar.gz；GitHub 自动生成的源码归档不属于应用安装包。Windows 原生 UI 验收只使用临时目录和合成认证数据。
 
 窗口图标以 `crates/switcher-desktop/assets/codex-auth-switcher.svg` 为源图。使用 `resvg 0.46.0` 渲染 PNG，再用 `Pillow 12.3.0` 从 PNG 生成包含 16、24、32、48、64、128 和 256 像素图像的 ICO。这两个工具只用于资源生成，不是程序运行时依赖。在仓库根目录运行以下命令可重建资源：
 

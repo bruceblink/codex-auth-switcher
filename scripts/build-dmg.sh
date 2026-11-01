@@ -15,7 +15,7 @@ source "$SCRIPT_DIR/macos/release-lib.sh"
 
 usage() {
     sed -n '1,5p' "$0"
-    printf '\nUsage: %s --architecture arm64|x86_64 --output-dir PATH\n' "$0"
+    printf '\nUsage: %s --architecture arm64 --output-dir PATH\n' "$0"
 }
 
 fail() {
@@ -57,8 +57,8 @@ done
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "macOS packages must be built on macOS."
 case "$ARCHITECTURE" in
-    arm64|x86_64) ;;
-    *) fail "Pass --architecture arm64 or --architecture x86_64." ;;
+    arm64) ;;
+    *) fail "Pass --architecture arm64. Only Apple Silicon is supported." ;;
 esac
 [[ -n "$OUTPUT_DIR" ]] || fail "Pass --output-dir within the repository target directory."
 

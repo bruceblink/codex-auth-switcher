@@ -48,21 +48,18 @@ version=0.2.0
 windows_dir="$temporary_root/windows"
 linux_dir="$temporary_root/linux"
 macos_arm64_dir="$temporary_root/macos-arm64"
-macos_x86_64_dir="$temporary_root/macos-x86_64"
-mkdir -p "$windows_dir" "$linux_dir" "$macos_arm64_dir" "$macos_x86_64_dir"
+mkdir -p "$windows_dir" "$linux_dir" "$macos_arm64_dir"
 
 windows_asset="Codex-Auth-Switcher-$version-windows-x64-setup.exe"
 linux_deb="Codex-Auth-Switcher-$version-linux-amd64.deb"
 linux_appimage="Codex-Auth-Switcher-$version-linux-x86_64.AppImage"
 macos_arm64="Codex-Auth-Switcher-$version-macos-arm64.dmg"
-macos_x86_64="Codex-Auth-Switcher-$version-macos-x86_64.dmg"
 
 printf 'synthetic Windows installer bytes\n' >"$windows_dir/$windows_asset"
 printf 'synthetic Linux deb bytes\n' >"$linux_dir/$linux_deb"
 printf 'synthetic Linux AppImage bytes\n' >"$linux_dir/$linux_appimage"
 printf 'synthetic macOS arm64 disk image bytes\n' >"$macos_arm64_dir/$macos_arm64"
-printf 'synthetic macOS x86_64 disk image bytes\n' >"$macos_x86_64_dir/$macos_x86_64"
-for directory in "$windows_dir" "$linux_dir" "$macos_arm64_dir" "$macos_x86_64_dir"; do
+for directory in "$windows_dir" "$linux_dir" "$macos_arm64_dir"; do
   (
     cd "$directory"
     shopt -s nullglob
@@ -78,8 +75,7 @@ bash "$script_dir/aggregate-assets.sh" \
   "$output_dir" \
   "$windows_dir" \
   "$linux_dir" \
-  "$macos_arm64_dir" \
-  "$macos_x86_64_dir"
+  "$macos_arm64_dir"
 
 if bash "$script_dir/aggregate-assets.sh" \
   v0.2.0-rc.1 \
@@ -87,13 +83,12 @@ if bash "$script_dir/aggregate-assets.sh" \
   "$temporary_root/invalid-release-assets" \
   "$windows_dir" \
   "$linux_dir" \
-  "$macos_arm64_dir" \
-  "$macos_x86_64_dir" >/dev/null 2>&1; then
+  "$macos_arm64_dir" >/dev/null 2>&1; then
   echo "Release aggregation accepted a prerelease tag." >&2
   exit 1
 fi
 
-expected_count=7
+expected_count=6
 actual_count=$(find "$output_dir" -mindepth 1 -maxdepth 1 -type f | wc -l)
 [[ "$actual_count" -eq "$expected_count" ]]
 (cd "$output_dir" && sha256sum --check --strict SHA256SUMS.txt)
@@ -106,12 +101,11 @@ jq -e \
     and .version == $version
     and .tag_name == $tag_name
     and .notes == $notes
-    and (.assets | length == 5)
+    and (.assets | length == 4)
     and ([.assets[].name] | sort) == [
       "Codex-Auth-Switcher-0.2.0-linux-amd64.deb",
       "Codex-Auth-Switcher-0.2.0-linux-x86_64.AppImage",
       "Codex-Auth-Switcher-0.2.0-macos-arm64.dmg",
-      "Codex-Auth-Switcher-0.2.0-macos-x86_64.dmg",
       "Codex-Auth-Switcher-0.2.0-windows-x64-setup.exe"
     ]
   ' "$output_dir/update-manifest.json" >/dev/null
@@ -125,8 +119,7 @@ if bash "$script_dir/aggregate-assets.sh" \
   "$temporary_root/should-not-exist" \
   "$windows_dir" \
   "$tampered_dir" \
-  "$macos_arm64_dir" \
-  "$macos_x86_64_dir" >/dev/null 2>&1; then
+  "$macos_arm64_dir" >/dev/null 2>&1; then
   echo "Aggregation accepted a package whose checksum was invalid." >&2
   exit 1
 fi

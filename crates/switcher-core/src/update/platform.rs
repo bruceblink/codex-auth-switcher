@@ -6,7 +6,6 @@ pub enum UpdatePlatform {
     LinuxAmd64Deb,
     LinuxX86_64AppImage,
     MacosArm64,
-    MacosX86_64,
 }
 
 impl UpdatePlatform {
@@ -23,9 +22,6 @@ impl UpdatePlatform {
             }
             Self::MacosArm64 => {
                 format!("Codex-Auth-Switcher-{version}-macos-arm64.dmg")
-            }
-            Self::MacosX86_64 => {
-                format!("Codex-Auth-Switcher-{version}-macos-x86_64.dmg")
             }
         }
     }
@@ -51,16 +47,10 @@ pub fn current_platform() -> Option<UpdatePlatform> {
     Some(UpdatePlatform::MacosArm64)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-pub fn current_platform() -> Option<UpdatePlatform> {
-    Some(UpdatePlatform::MacosX86_64)
-}
-
 #[cfg(not(any(
     all(target_os = "windows", target_arch = "x86_64"),
     all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "macos", target_arch = "x86_64")
+    all(target_os = "macos", target_arch = "aarch64")
 )))]
 pub fn current_platform() -> Option<UpdatePlatform> {
     None

@@ -19,7 +19,7 @@ source "$SCRIPT_DIR/package-metadata.sh"
 source "$SCRIPT_DIR/macos/release-lib.sh"
 
 usage() {
-    printf 'Usage: %s --architecture arm64|x86_64\n' "$0"
+    printf 'Usage: %s --architecture arm64\n' "$0"
 }
 
 fail() {
@@ -52,13 +52,12 @@ done
 if [[ -z "$ARCHITECTURE" ]]; then
     case "$(uname -m)" in
         arm64|aarch64) ARCHITECTURE="arm64" ;;
-        x86_64|amd64) ARCHITECTURE="x86_64" ;;
-        *) fail "Cannot infer a supported macOS architecture from $(uname -m)." ;;
+        *) fail "macOS packages require an Apple Silicon host." ;;
     esac
 fi
 case "$ARCHITECTURE" in
-    arm64|x86_64) ;;
-    *) fail "Unsupported macOS architecture: $ARCHITECTURE" ;;
+    arm64) ;;
+    *) fail "Unsupported macOS architecture: $ARCHITECTURE. Only arm64 is supported." ;;
 esac
 [[ "$(uname -s)" == "Darwin" ]] || fail "macOS packages must be built on macOS."
 

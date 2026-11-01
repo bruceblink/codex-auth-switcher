@@ -287,7 +287,6 @@ fn write_manifest(
         UpdatePlatform::LinuxAmd64Deb,
         UpdatePlatform::LinuxX86_64AppImage,
         UpdatePlatform::MacosArm64,
-        UpdatePlatform::MacosX86_64,
     ];
     let assets = names
         .into_iter()

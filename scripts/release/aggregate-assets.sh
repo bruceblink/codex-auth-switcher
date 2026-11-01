@@ -2,8 +2,8 @@
 set -euo pipefail
 export LC_ALL=C
 
-if [[ $# -ne 7 ]]; then
-  echo "Usage: $0 <tag> <notes-file> <output-dir> <windows-dir> <linux-dir> <macos-arm64-dir> <macos-x86_64-dir>" >&2
+if [[ $# -ne 6 ]]; then
+  echo "Usage: $0 <tag> <notes-file> <output-dir> <windows-dir> <linux-dir> <macos-arm64-dir>" >&2
   exit 2
 fi
 
@@ -13,7 +13,6 @@ output_dir=$3
 windows_dir=$4
 linux_dir=$5
 macos_arm64_dir=$6
-macos_x86_64_dir=$7
 
 if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
   echo "Release tag must be a v-prefixed semantic version: $tag" >&2
@@ -33,13 +32,11 @@ windows_asset="Codex-Auth-Switcher-$version-windows-x64-setup.exe"
 linux_deb="Codex-Auth-Switcher-$version-linux-amd64.deb"
 linux_appimage="Codex-Auth-Switcher-$version-linux-x86_64.AppImage"
 macos_arm64="Codex-Auth-Switcher-$version-macos-arm64.dmg"
-macos_x86_64="Codex-Auth-Switcher-$version-macos-x86_64.dmg"
 release_assets=(
   "$windows_asset"
   "$linux_deb"
   "$linux_appimage"
   "$macos_arm64"
-  "$macos_x86_64"
 )
 
 validate_package_directory() {
@@ -109,14 +106,12 @@ validate_package_directory() {
 validate_package_directory "$windows_dir" "$windows_asset"
 validate_package_directory "$linux_dir" "$linux_deb" "$linux_appimage"
 validate_package_directory "$macos_arm64_dir" "$macos_arm64"
-validate_package_directory "$macos_x86_64_dir" "$macos_x86_64"
 
 mkdir -p "$output_dir"
 cp -- "$windows_dir/$windows_asset" "$output_dir/"
 cp -- "$linux_dir/$linux_deb" "$output_dir/"
 cp -- "$linux_dir/$linux_appimage" "$output_dir/"
 cp -- "$macos_arm64_dir/$macos_arm64" "$output_dir/"
-cp -- "$macos_x86_64_dir/$macos_x86_64" "$output_dir/"
 
 (
   cd "$output_dir"
@@ -163,7 +158,7 @@ jq -e \
     and .tag_name == $tag_name
     and (.notes | type == "string" and length > 0)
     and (.published_at | fromdateiso8601? != null)
-    and (.assets | length == 5)
+    and (.assets | length == 4)
     and all(.assets[]; (keys | sort) == ["name", "sha256", "size"])
     and all(.assets[]; (.size | type == "number" and . > 0 and . <= 536870912))
     and all(.assets[]; (.sha256 | test("^[0-9a-f]{64}$")))

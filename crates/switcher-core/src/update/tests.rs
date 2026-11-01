@@ -17,7 +17,6 @@ fn valid_manifest() -> Value {
         UpdatePlatform::LinuxAmd64Deb,
         UpdatePlatform::LinuxX86_64AppImage,
         UpdatePlatform::MacosArm64,
-        UpdatePlatform::MacosX86_64,
     ];
     let assets = platforms
         .into_iter()
@@ -92,14 +91,13 @@ fn manifest_accepts_canonical_release_and_platform_assets() {
         release.release_url.as_str(),
         format!("{RELEASE_TAG_PREFIX}v0.3.1")
     );
-    assert_eq!(assets.len(), 5);
+    assert_eq!(assets.len(), 4);
 
     for platform in [
         UpdatePlatform::WindowsX64,
         UpdatePlatform::LinuxAmd64Deb,
         UpdatePlatform::LinuxX86_64AppImage,
         UpdatePlatform::MacosArm64,
-        UpdatePlatform::MacosX86_64,
     ] {
         let result = metadata::select_platform_asset(
             release.clone(),
@@ -304,9 +302,6 @@ fn current_platform_matches_a_supported_build_target() {
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     assert_eq!(current_platform(), Some(UpdatePlatform::MacosArm64));
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    assert_eq!(current_platform(), Some(UpdatePlatform::MacosX86_64));
 }
 
 #[test]

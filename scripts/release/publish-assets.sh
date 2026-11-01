@@ -63,7 +63,6 @@ expected_packages=(
   "Codex-Auth-Switcher-$version-linux-amd64.deb"
   "Codex-Auth-Switcher-$version-linux-x86_64.AppImage"
   "Codex-Auth-Switcher-$version-macos-arm64.dmg"
-  "Codex-Auth-Switcher-$version-macos-x86_64.dmg"
 )
 expected_release_assets=(
   "${expected_packages[@]}"
@@ -76,7 +75,7 @@ while IFS= read -r -d '' path; do
 done < <(find "$assets_directory" -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
 if [[ $(printf '%s\n' "${expected_release_assets[@]}" | sort) != \
       $(printf '%s\n' "${actual_release_assets[@]}" | sort) ]]; then
-  echo "Release asset directory does not contain exactly the five packages, SHA256SUMS.txt, and update-manifest.json." >&2
+  echo "Release asset directory does not contain exactly the four packages, SHA256SUMS.txt, and update-manifest.json." >&2
   exit 1
 fi
 
@@ -98,7 +97,7 @@ jq -e \
     and .notes == $notes
     and (.published_at | fromdateiso8601? != null)
     and ([.assets[].name] | sort) == ($expected_packages | sort)
-    and (.assets | length == 5)
+    and (.assets | length == 4)
     and all(.assets[]; (keys | sort) == ["name", "sha256", "size"])
     and all(.assets[]; (.size | type == "number" and . > 0 and . <= 536870912))
     and all(.assets[]; (.sha256 | test("^[0-9a-f]{64}$")))
@@ -150,7 +149,7 @@ if gh release view "$tag" --repo "$repository" >/dev/null 2>&1; then
       .schema_version == 1
       and .version == $version
       and .tag_name == $tag_name
-      and (.assets | length == 5)
+      and (.assets | length == 4)
     ' "$existing_manifest_directory/update-manifest.json" >/dev/null
 
   gh release upload "$tag" --repo "$repository" --clobber \
@@ -206,4 +205,4 @@ if [[ "$is_draft" != "false" ]]; then
   exit 1
 fi
 
-echo "Published and verified $tag with five packages, SHA256SUMS.txt, and update-manifest.json."
+echo "Published and verified $tag with four packages, SHA256SUMS.txt, and update-manifest.json."

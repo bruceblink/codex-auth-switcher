@@ -23,7 +23,7 @@ macos_get_release_asset_name() {
 
     package_is_supported_semver "$version" || return 1
     case "$architecture" in
-        arm64|x86_64) ;;
+        arm64) ;;
         *)
             echo "Unsupported macOS release architecture: $architecture" >&2
             return 1
@@ -35,7 +35,6 @@ macos_get_release_asset_name() {
 macos_get_rust_target() {
     case "$1" in
         arm64) printf 'aarch64-apple-darwin\n' ;;
-        x86_64) printf 'x86_64-apple-darwin\n' ;;
         *)
             echo "Unsupported macOS architecture: $1" >&2
             return 1

@@ -18,7 +18,7 @@ env:
 
 jobs:
   quality:
-    name: Four-platform quality checks
+    name: Three-platform quality checks
     uses: ./.github/workflows/quality.yml
     with:
       ref: ${{ github.sha }}
@@ -225,9 +225,6 @@ jobs:
           - os: macos-15
             architecture: arm64
             rust_target: aarch64-apple-darwin
-          - os: macos-15-intel
-            architecture: x86_64
-            rust_target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout source

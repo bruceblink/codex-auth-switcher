@@ -1278,7 +1278,6 @@ pub(crate) fn platform_name() -> &'static str {
         Some(UpdatePlatform::LinuxAmd64Deb) => "Linux x86_64 Debian",
         Some(UpdatePlatform::LinuxX86_64AppImage) => "Linux x86_64 AppImage",
         Some(UpdatePlatform::MacosArm64) => "macOS ARM64",
-        Some(UpdatePlatform::MacosX86_64) => "macOS x86_64",
         None => "当前平台未受支持",
     }
 }

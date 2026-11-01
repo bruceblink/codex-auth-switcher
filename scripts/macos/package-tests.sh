@@ -36,10 +36,8 @@ assert_equal "1.2.3" "$(macos_get_bundle_version "1.2.3-beta.1+build.5")" \
 assert_fails "Invalid semantic bundle version" macos_get_bundle_version "1.2"
 assert_equal "Codex-Auth-Switcher-1.2.3-macos-arm64.dmg" \
     "$(macos_get_release_asset_name "1.2.3" "arm64")" "Apple Silicon package name"
-assert_equal "Codex-Auth-Switcher-1.2.3-macos-x86_64.dmg" \
-    "$(macos_get_release_asset_name "1.2.3" "x86_64")" "Intel package name"
 assert_equal "aarch64-apple-darwin" "$(macos_get_rust_target "arm64")" "Apple Silicon target"
-assert_equal "x86_64-apple-darwin" "$(macos_get_rust_target "x86_64")" "Intel target"
+assert_fails "Unsupported Intel architecture" macos_get_release_asset_name "1.2.3" "x86_64"
 assert_fails "Unsupported architecture" macos_get_release_asset_name "1.2.3" "universal"
 
 (

@@ -7,7 +7,7 @@
 - Windows：运行 `Codex-Auth-Switcher-<version>-windows-x64-setup.exe`，按向导安装到当前用户目录。安装完成后从开始菜单启动。
 - Debian/Ubuntu：使用系统包管理器安装 `Codex-Auth-Switcher-<version>-linux-amd64.deb`，再从应用菜单启动。
 - 其他 Linux x64：为 `Codex-Auth-Switcher-<version>-linux-x86_64.AppImage` 添加执行权限后运行。
-- macOS：按处理器下载 `-macos-arm64.dmg` 或 `-macos-x86_64.dmg`。挂载后把应用拖入 Applications，再从该目录启动。
+- macOS：下载 `-macos-arm64.dmg`。挂载后把应用拖入 Applications，再从该目录启动。
 
 下载后请用同一版本的 `SHA256SUMS.txt` 检查文件。当前安装包没有 Windows 证书签名或 macOS 公证。若系统阻止运行，请核对来源与校验值，不要关闭系统安全保护。历史版本 `v0.3.0` 是原始可执行文件，不包含安装向导。
 
@@ -60,7 +60,7 @@ API key 输入框会遮盖输入内容，并显示首尾提示。程序只使用
 ## 更新软件
 
 1. 打开“软件更新”页，点击“检查更新”。
-2. 发现稳定新版后，检查版本、发布说明和安装包名称。Windows 选择 x64 安装向导；macOS 按当前处理器选择 DMG；Linux 从 AppImage 启动时选择 AppImage，其他情况下选择 `.deb`。
+2. 发现稳定新版后，检查版本、发布说明和安装包名称。Windows 选择 x64 安装向导；macOS 选择 ARM64 DMG；Linux 从 AppImage 启动时选择 AppImage，其他情况下选择 `.deb`。
 3. 点击下载。下载期间可以查看进度或取消；网络失败或校验失败后可以重试。
 4. 下载完成并通过大小、SHA-256 检查后，保存或放弃尚未应用的输入。Windows 和 Debian 包可点击“安装更新”，确认后启动系统安装器；启动前会再次校验文件。按安装器提示关闭 Codex Auth Switcher 并完成更新。
 5. macOS 点击“打开 DMG”，挂载后关闭旧版，将应用拖入 Applications 并确认替换。打开 DMG 不代表安装完成。
