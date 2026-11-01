@@ -88,7 +88,7 @@ mod windows {
     }
 
     struct WindowSearch {
-        executable: String,
+        executable: PathBuf,
         windows: Vec<HWND>,
         processes: BTreeMap<u32, ProcessHandle>,
     }
@@ -103,10 +103,7 @@ mod windows {
             .map(|(process_id, process)| (*process_id, process.parent_id))
             .collect();
         let old_pids = process_family(&process_parents, &window_process_ids);
-        if running_processes
-            .keys()
-            .any(|process_id| !old_pids.contains(process_id))
-        {
+        if !all_processes_belong_to_family(running_processes.keys().copied(), &old_pids) {
             return Err(Error(
                 "Codex is running without an open desktop window. Exit it from the system tray, then retry.",
             ));
@@ -135,6 +132,13 @@ mod windows {
             }
             family.extend(children);
         }
+    }
+
+    fn all_processes_belong_to_family(
+        mut process_ids: impl Iterator<Item = u32>,
+        family_ids: &BTreeSet<u32>,
+    ) -> bool {
+        process_ids.all(|process_id| family_ids.contains(&process_id))
     }
 
     fn installed_app() -> Result<CodexApp> {
@@ -249,7 +253,7 @@ if ($null -eq $application) { exit 11 }
 
     fn app_windows(executable: &Path) -> Result<AppWindows> {
         let mut search = WindowSearch {
-            executable: executable.to_string_lossy().into_owned(),
+            executable: executable.to_path_buf(),
             windows: Vec::new(),
             processes: BTreeMap::new(),
         };
@@ -297,9 +301,9 @@ if ($null -eq $application) { exit 11 }
                 let handle = unsafe { OpenProcess(access, 0, process_id) };
                 if !handle.is_null() {
                     let process = ProcessHandle(handle);
-                    if process_image_path(process.0).is_some_and(|path| {
-                        path.eq_ignore_ascii_case(&executable.to_string_lossy())
-                    }) {
+                    if process_image_path(process.0)
+                        .is_some_and(|path| same_windows_path(Path::new(&path), executable))
+                    {
                         processes.insert(
                             process_id,
                             RunningProcess {
@@ -337,7 +341,7 @@ if ($null -eq $application) { exit 11 }
         };
         // The app is a packaged ChatGPT.exe; codex.exe CLI and other packages do not match.
         let search = unsafe { &mut *(context as *mut WindowSearch) };
-        if !image_path.eq_ignore_ascii_case(&search.executable) {
+        if !same_windows_path(Path::new(&image_path), &search.executable) {
             return 1;
         }
         search.windows.push(hwnd);
@@ -360,6 +364,22 @@ if ($null -eq $application) { exit 11 }
                 .to_string_lossy()
                 .into_owned(),
         )
+    }
+
+    fn same_windows_path(left: &Path, right: &Path) -> bool {
+        let mut left = left.components();
+        let mut right = right.components();
+        loop {
+            match (left.next(), right.next()) {
+                (Some(left), Some(right))
+                    if left
+                        .as_os_str()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy()) => {}
+                (None, None) => return true,
+                _ => return false,
+            }
+        }
     }
 
     fn close_and_wait(
@@ -503,6 +523,18 @@ if ($null -eq $application) { exit 11 }
         }
 
         #[test]
+        fn running_process_without_a_visible_window_root_is_rejected() {
+            assert!(
+                !all_processes_belong_to_family([100].into_iter(), &BTreeSet::new()),
+                "a running Codex process without a matching visible window must block restart"
+            );
+            assert!(all_processes_belong_to_family(
+                [100, 200].into_iter(),
+                &BTreeSet::from([100, 200])
+            ));
+        }
+
+        #[test]
         fn normal_close_waits_for_a_controlled_native_window_process() -> Result<()> {
             const CHILD_ENV: &str = "CODEX_AUTH_SWITCHER_RESTART_TEST_WINDOW";
             const DESCENDANT_ENV: &str = "CODEX_AUTH_SWITCHER_RESTART_TEST_DESCENDANT";
@@ -538,6 +570,17 @@ if ($null -eq $application) { exit 11 }
 
             let executable = std::env::current_exe()
                 .map_err(|_| Error("Could not start the controlled window test."))?;
+            let mixed_separator_executable = PathBuf::from(format!(
+                "{}/{}",
+                executable
+                    .parent()
+                    .ok_or(Error("The controlled window executable has no parent."))?
+                    .display(),
+                executable
+                    .file_name()
+                    .ok_or(Error("The controlled window executable has no file name."))?
+                    .to_string_lossy()
+            ));
             let mut child = Command::new(&executable)
                 .args([
                     "--exact",
@@ -555,7 +598,7 @@ if ($null -eq $application) { exit 11 }
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut child_windows = None;
             while Instant::now() < deadline {
-                let candidate = match app_windows(&executable) {
+                let candidate = match app_windows(&mixed_separator_executable) {
                     Ok(candidate) => candidate,
                     Err(error) => {
                         let _ = child.kill();
@@ -585,7 +628,7 @@ if ($null -eq $application) { exit 11 }
             let descendant_deadline = Instant::now() + Duration::from_secs(5);
             let mut running_processes = None;
             while Instant::now() < descendant_deadline {
-                let candidate = match running_app_processes(&executable) {
+                let candidate = match running_app_processes(&mixed_separator_executable) {
                     Ok(candidate) => candidate,
                     Err(error) => {
                         let _ = child.kill();

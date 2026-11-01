@@ -779,6 +779,14 @@ async fn restart_confirmation_traps_focus_and_escape_cancels(cx: &mut TestAppCon
     crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
     let (window, app) = open(cx, home, 1040., 740.);
     idle(cx, window, &app).await;
+    let restart_calls = Arc::new(AtomicUsize::new(0));
+    let calls = restart_calls.clone();
+    app.update(cx, |this, _| {
+        this.restart_handler = Arc::new(move || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+    });
 
     click(cx, window, "restart");
     cx.wait_for(window, Duration::from_secs(1), |window, _| {
@@ -789,8 +797,14 @@ async fn restart_confirmation_traps_focus_and_escape_cancels(cx: &mut TestAppCon
         window.render_frame(cx);
         assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
         assert!(window.try_find("confirm-restart").is_some());
-        window.click("models-tab", cx);
-        assert_eq!(app.read(cx).tab, MainTab::Switch);
+        window.press("tab", cx);
+        window.press("shift-tab", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("confirm-restart").focused(),
+            Some(true),
+            "Tab then Shift+Tab should return focus to the confirmation action"
+        );
         window.press("escape", cx);
     })
     .unwrap_or_else(|error| panic!("cannot inspect restart confirmation: {error}"));
@@ -800,6 +814,23 @@ async fn restart_confirmation_traps_focus_and_escape_cancels(cx: &mut TestAppCon
     .await;
     assert_eq!(app.read_with(cx, |view, _| view.tab), MainTab::Switch);
     assert!(app.read_with(cx, |view, _| view.message.contains("已取消重启")));
+    assert_eq!(restart_calls.load(Ordering::SeqCst), 0);
+
+    click(cx, window, "restart");
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("confirm-restart").is_some()
+    })
+    .await;
+    click(cx, window, "confirm-restart");
+    cx.wait_for(window, Duration::from_secs(1), |_, cx| {
+        !app.read(cx).busy && restart_calls.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert_eq!(restart_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        app.read_with(cx, |view, _| view.message.contains("已重启")),
+        "the confirmed callback should complete the controlled restart operation"
+    );
 }
 
 #[gpui_kit::test]

@@ -1117,11 +1117,10 @@ impl Switcher {
                         .overlay_closable(false)
                         .keyboard(true)
                         .close_button(false)
-                        .on_ok(move |_, _, cx| {
-                            let _ = restart_switcher.update_in(cx, |this, window, cx| {
-                                this.restart(window, cx);
-                            });
-                            true
+                        .on_ok(move |_, window, cx| {
+                            restart_switcher
+                                .update(cx, |this, cx| this.restart(window, cx))
+                                .is_ok()
                         })
                         .on_cancel(move |_, _, cx| {
                             let _ = cancel_switcher.update(cx, |this, cx| {

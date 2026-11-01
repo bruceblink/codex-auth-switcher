@@ -109,6 +109,7 @@ pub(crate) struct Switcher {
     pub(crate) review_scroll: ScrollHandle,
     pub(crate) catalog_scroll: ScrollHandle,
     pub(crate) model_list_scroll: ScrollHandle,
+    restart_handler: Arc<dyn Fn() -> CoreResult<()> + Send + Sync>,
 }
 
 impl Switcher {
@@ -184,6 +185,7 @@ impl Switcher {
             review_scroll: ScrollHandle::default(),
             catalog_scroll: ScrollHandle::default(),
             model_list_scroll: ScrollHandle::default(),
+            restart_handler: Arc::new(crate::restart::restart),
         };
         this.refresh(window, cx);
         this
@@ -558,10 +560,11 @@ impl Switcher {
         if self.restart_block_reason(cx).is_some() {
             return;
         }
+        let restart_handler = self.restart_handler.clone();
         self.execute(
             window,
             cx,
-            |_| crate::restart::restart(),
+            move |_| restart_handler(),
             |this, (), _, _| {
                 this.restart_needed = false;
                 this.message = "Codex 桌面应用已重启。请新建会话以使用最新配置。".into();
