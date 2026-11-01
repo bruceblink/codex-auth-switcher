@@ -80,6 +80,7 @@ impl FileDialogs {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MainTab {
     Switch,
+    Review,
     Models,
 }
 
@@ -103,9 +104,9 @@ pub(crate) struct Switcher {
     pub(crate) error: bool,
     pub(crate) directory_needs_refresh: bool,
     pub(crate) restart_needed: bool,
-    pub(crate) restart_confirmation_open: bool,
     pub(crate) catalog: CatalogEditor,
     pub(crate) switch_scroll: ScrollHandle,
+    pub(crate) review_scroll: ScrollHandle,
     pub(crate) catalog_scroll: ScrollHandle,
     pub(crate) model_list_scroll: ScrollHandle,
 }
@@ -178,9 +179,9 @@ impl Switcher {
             error: false,
             directory_needs_refresh: false,
             restart_needed: false,
-            restart_confirmation_open: false,
             catalog,
             switch_scroll: ScrollHandle::default(),
+            review_scroll: ScrollHandle::default(),
             catalog_scroll: ScrollHandle::default(),
             model_list_scroll: ScrollHandle::default(),
         };
@@ -337,6 +338,12 @@ impl Switcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.catalog.dirty {
+            self.message = "模型目录有未保存改动。请先保存或放弃，再初始化模式。".into();
+            self.error = true;
+            cx.notify();
+            return;
+        }
         self.prepared = None;
         if !self.select_directory(window, cx) {
             return;
@@ -399,6 +406,7 @@ impl Switcher {
                 }
                 .into();
                 this.prepared = Some(prepared);
+                this.tab = MainTab::Review;
             },
         );
     }
@@ -421,6 +429,7 @@ impl Switcher {
                 this.clear_key(window, cx);
                 match result {
                     Ok((result, status)) => {
+                        this.tab = MainTab::Switch;
                         if result.changed {
                             this.catalog.clear_loaded(window, cx);
                         }
@@ -461,6 +470,7 @@ impl Switcher {
                         }
                     }
                     Err(error) => {
+                        this.tab = MainTab::Switch;
                         this.message = format::user_error(&error);
                         this.error = true;
                         this.prepared = None;
@@ -545,23 +555,9 @@ impl Switcher {
     }
 
     pub(crate) fn restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let allowed = crate::restart::supported()
-            && !self.busy
-            && !self.catalog.dirty
-            && !self.directory_needs_refresh
-            && self.key.read(cx).value().is_empty()
-            && self
-                .prepared
-                .as_ref()
-                .is_none_or(|prepared| !prepared.preview.changed)
-            && self
-                .status
-                .as_ref()
-                .is_some_and(|status| status.config_exists && !status.recovery_pending);
-        if !allowed {
+        if self.restart_block_reason(cx).is_some() {
             return;
         }
-        self.restart_confirmation_open = false;
         self.execute(
             window,
             cx,
@@ -571,6 +567,42 @@ impl Switcher {
                 this.message = "Codex 桌面应用已重启。请新建会话以使用最新配置。".into();
             },
         );
+    }
+
+    pub(crate) fn restart_block_reason(&self, cx: &Context<Self>) -> Option<&'static str> {
+        if !crate::restart::supported() {
+            Some("此平台暂不支持一键重启 Codex。")
+        } else if self.busy {
+            Some("正在处理当前操作，请完成后再重启。")
+        } else if self.catalog.dirty {
+            Some("模型目录有未保存改动。请先保存或放弃改动。")
+        } else if self.directory_needs_refresh {
+            Some("配置目录已修改。请先刷新状态。")
+        } else if !self.key.read(cx).value().is_empty() {
+            Some("API key 输入框有未应用的内容。请先应用或清空输入框。")
+        } else if self
+            .prepared
+            .as_ref()
+            .is_some_and(|prepared| prepared.preview.changed)
+        {
+            Some("当前有未确认的切换预览。请先确认或取消预览。")
+        } else if self
+            .status
+            .as_ref()
+            .is_some_and(|status| status.recovery_pending)
+        {
+            Some("检测到未完成的恢复。请先恢复模式存档。")
+        } else if self.status.is_none() {
+            Some("请先读取 Codex 配置状态。")
+        } else if self
+            .status
+            .as_ref()
+            .is_some_and(|status| !status.config_exists)
+        {
+            Some("尚未创建 Codex 默认配置。")
+        } else {
+            None
+        }
     }
 }
 

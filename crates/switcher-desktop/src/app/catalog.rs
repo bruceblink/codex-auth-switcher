@@ -18,6 +18,7 @@ enum ModelField {
 /// input subscriptions apply edits to the selected in-memory catalog entry.
 pub(crate) struct CatalogEditor {
     pub(crate) catalog: Option<ModelCatalog>,
+    baseline: Option<ModelCatalog>,
     pub(crate) selected_model: usize,
     pub(crate) dirty: bool,
     pub(crate) model_id: Entity<InputState>,
@@ -65,6 +66,7 @@ impl CatalogEditor {
         }
         Self {
             catalog: None,
+            baseline: None,
             selected_model: 0,
             dirty: false,
             model_id,
@@ -99,8 +101,17 @@ impl CatalogEditor {
         window: &mut Window,
         cx: &mut Context<Switcher>,
     ) {
+        let selected_slug = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.models.get(self.selected_model))
+            .map(|model| model.slug.as_str());
+        let previous_index = self.selected_model;
+        self.selected_model = selected_slug
+            .and_then(|slug| catalog.models.iter().position(|model| model.slug == slug))
+            .unwrap_or_else(|| previous_index.min(catalog.models.len().saturating_sub(1)));
+        self.baseline = Some(catalog.clone());
         self.catalog = Some(catalog);
-        self.selected_model = 0;
         self.dirty = false;
         self.priority_valid = true;
         self.sync_fields(window, cx);
@@ -122,6 +133,7 @@ impl CatalogEditor {
 
     pub(crate) fn clear_loaded(&mut self, window: &mut Window, cx: &mut Context<Switcher>) {
         self.catalog = None;
+        self.baseline = None;
         self.selected_model = 0;
         self.dirty = false;
         self.priority_valid = true;
@@ -134,6 +146,12 @@ impl CatalogEditor {
             &self.supported_reasoning,
         ] {
             entity.update(cx, |state, cx| state.set_value("", window, cx));
+        }
+    }
+
+    pub(crate) fn discard_edits(&mut self, window: &mut Window, cx: &mut Context<Switcher>) {
+        if let Some(baseline) = self.baseline.clone() {
+            self.load(baseline, window, cx);
         }
     }
 
@@ -358,9 +376,7 @@ impl Switcher {
                 this.catalog.load(catalog, window, cx);
                 this.restart_needed |= saved.backup.is_some();
                 this.message = match saved.backup {
-                    Some(backup) => {
-                        format!("已保存 {} 个模型选项。备份：{}", saved.model_count, backup)
-                    }
+                    Some(_) => format!("已保存 {} 个模型，已创建备份。", saved.model_count),
                     None => "模型目录没有变化".into(),
                 };
                 this.error = false;
@@ -372,8 +388,8 @@ impl Switcher {
         if self.busy {
             return;
         }
-        self.catalog.clear_loaded(window, cx);
-        self.message = "已放弃模型目录改动。重新读取后可继续编辑。".into();
+        self.catalog.discard_edits(window, cx);
+        self.message = "已放弃未保存改动，模型目录已恢复到上次读取状态。".into();
         self.error = false;
         cx.notify();
     }

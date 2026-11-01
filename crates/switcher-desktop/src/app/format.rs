@@ -16,15 +16,7 @@ pub(super) fn auth_source_name(source: &str) -> &str {
     match source {
         "user input" => "界面输入",
         "environment" => "旧存档环境来源",
-        "latest active authentication" => "当前活动认证",
-        source => source,
-    }
-}
-
-pub(super) fn config_source_name(source: &str) -> &str {
-    match source {
-        "latest active config" => "当前活动配置",
-        "default API parameters" => "官方默认 API 参数",
+        "latest active authentication" => "已保存的目标模式认证",
         source => source,
     }
 }
@@ -210,6 +202,12 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
         "Target authentication is missing. Import a matching auth file." => {
             "目标模式缺少认证。请导入对应模式的认证 JSON。"
         }
+        "Target model catalog is missing." => {
+            "目标模式缺少模型目录。请检查 config.toml 中的 model_catalog_json。"
+        }
+        "Target model is absent from its catalog." => {
+            "目标模型不在已配置的模型目录中。请先添加并保存该模型。"
+        }
         "Current authentication is missing. Import valid authentication first." => {
             "当前活动认证缺失。请先导入有效认证。"
         }
@@ -255,4 +253,15 @@ pub(super) fn user_error(error: &switcher_core::Error) -> String {
         message => return format!("操作失败：{message}"),
     };
     message.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn latest_active_authentication_names_the_saved_target_profile() {
+        assert_eq!(
+            super::auth_source_name("latest active authentication"),
+            "已保存的目标模式认证"
+        );
+    }
 }

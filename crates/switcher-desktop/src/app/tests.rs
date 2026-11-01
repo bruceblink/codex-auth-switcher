@@ -1,4 +1,4 @@
-use super::{DialogFuture, FileDialogs, Switcher};
+use super::{DialogFuture, FileDialogs, MainTab, Switcher};
 use gpui_kit::{
     AnyWindowHandle, AppContext, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
     point, px, size,
@@ -79,6 +79,41 @@ fn click(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) {
         window.click(id, cx);
     })
     .unwrap_or_else(|error| panic!("cannot click {id}: {error}"));
+}
+
+fn assert_buttons_fit_without_overlap(
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+    ids: &[&'static str],
+) {
+    window.render_frame(cx);
+    let viewport = window.viewport_size();
+    let bounds = ids
+        .iter()
+        .map(|id| {
+            let button = window.find(*id);
+            assert!(button.visible(), "{id} is outside the window");
+            let bounds = button.bounds();
+            assert!(
+                bounds.left() >= px(0.)
+                    && bounds.top() >= px(0.)
+                    && bounds.right() <= viewport.width
+                    && bounds.bottom() <= viewport.height,
+                "{id} is outside the viewport: {bounds:?}"
+            );
+            bounds
+        })
+        .collect::<Vec<_>>();
+    for (index, left) in bounds.iter().enumerate() {
+        for right in bounds.iter().skip(index + 1) {
+            let overlaps_x = left.left() < right.right() && left.right() > right.left();
+            let overlaps_y = left.top() < right.bottom() && left.bottom() > right.top();
+            assert!(
+                !(overlaps_x && overlaps_y),
+                "actions overlap: {left:?} {right:?}"
+            );
+        }
+    }
 }
 
 fn write_model_catalog(path: &Path, slug: &str) {
@@ -164,6 +199,13 @@ async fn first_run_creates_defaults_without_fake_authentication(cx: &mut TestApp
     let (window, app) = open(cx, home.clone(), 1040., 740.);
     idle(cx, window, &app).await;
     assert!(!home.join("config.toml").exists());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let initialize = window.find("initialize");
+        assert!(initialize.visible());
+        assert_eq!(initialize.label(), Some("创建默认配置"));
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect first-run action: {error}"));
     click(cx, window, "initialize");
     idle(cx, window, &app).await;
     let config = fs::read_to_string(home.join("config.toml"))
@@ -289,14 +331,50 @@ async fn controls_stay_visible_and_picker_cancellation_is_safe(cx: &mut TestAppC
     let (window, app) = open(cx, home.clone(), 720., 560.);
     idle(cx, window, &app).await;
     cx.update_window(window, |_, window, cx| {
-        window.render_frame(cx);
-        for id in ["preview", "apply", "restart"] {
-            let button = window.find(id);
-            assert!(button.visible(), "{id} is outside the window");
-            assert!(button.bounds().bottom() <= window.viewport_size().height);
-        }
+        assert_buttons_fit_without_overlap(window, cx, &["preview", "restart"]);
+        assert!(
+            window.try_find("apply").is_none(),
+            "apply action must be shown only after review"
+        );
     })
     .unwrap_or_else(|error| panic!("cannot inspect test window: {error}"));
+
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+    cx.update_window(window, |_, window, cx| {
+        assert_buttons_fit_without_overlap(
+            window,
+            cx,
+            &["back-to-settings", "cancel-preview", "apply"],
+        );
+        assert!(
+            window.try_find("restart").is_none(),
+            "restart action should not compete with review confirmation"
+        );
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect review actions: {error}"));
+    click(cx, window, "cancel-preview");
+    assert_eq!(app.read_with(cx, |view, _| view.tab), MainTab::Switch);
+
+    click(cx, window, "models-tab");
+    cx.update_window(window, |_, window, cx| {
+        assert_buttons_fit_without_overlap(
+            window,
+            cx,
+            &["catalog-save", "catalog-discard", "restart"],
+        );
+        for id in ["preview", "apply"] {
+            assert!(
+                window.try_find(id).is_none(),
+                "{id} should not appear on the model page"
+            );
+        }
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect model page actions: {error}"));
+    click(cx, window, "switch-tab");
+
     let before = fs::read(home.join("config.toml"))
         .unwrap_or_else(|error| panic!("cannot read test config: {error}"));
     click(cx, window, "browse");
@@ -341,16 +419,6 @@ async fn scrollbars_reach_overflowing_switch_and_model_content(cx: &mut TestAppC
     click(cx, window, "initialize");
     idle(cx, window, &app).await;
     cx.update_window(window, |_, window, cx| {
-        let key = app.read(cx).key.clone();
-        key.update(cx, |state, cx| {
-            state.set_value("synthetic-scroll-test-key", window, cx);
-        });
-    })
-    .unwrap_or_else(|error| panic!("cannot seed preview input: {error}"));
-    click(cx, window, "preview");
-    idle(cx, window, &app).await;
-
-    cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         let scroll = app.read(cx).switch_scroll.clone();
         assert!(
@@ -366,25 +434,51 @@ async fn scrollbars_reach_overflowing_switch_and_model_content(cx: &mut TestAppC
             scroll.offset().y < offset_before,
             "dragging the switch page scrollbar did not move its content"
         );
-        for id in ["preview", "apply", "restart"] {
-            let button = window.find(id);
-            assert!(button.visible(), "{id} is outside the window");
-            assert!(button.bounds().bottom() <= window.viewport_size().height);
-        }
+        assert_buttons_fit_without_overlap(window, cx, &["preview", "restart"]);
+        assert!(window.try_find("apply").is_none());
     })
     .unwrap_or_else(|error| panic!("cannot inspect switch page scrolling: {error}"));
+    cx.update_window(window, |_, window, cx| {
+        let key = app.read(cx).key.clone();
+        key.update(cx, |state, cx| {
+            state.set_value("synthetic-scroll-test-key", window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot seed preview input: {error}"));
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+
+    cx.update_window(window, |_, window, cx| {
+        assert_buttons_fit_without_overlap(
+            window,
+            cx,
+            &["back-to-settings", "cancel-preview", "apply"],
+        );
+        assert_eq!(app.read(cx).tab, MainTab::Review);
+        assert!(window.try_find("restart").is_none());
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect review actions: {error}"));
 
     click(cx, window, "models-tab");
     click(cx, window, "catalog-load");
     idle(cx, window, &app).await;
     cx.update_window(window, |_, window, cx| {
-        window.render_frame(cx);
+        assert_buttons_fit_without_overlap(
+            window,
+            cx,
+            &["catalog-save", "catalog-discard", "restart"],
+        );
+        assert!(
+            window.try_find("preview").is_none() && window.try_find("apply").is_none(),
+            "mode-switch actions must not appear on the model page"
+        );
         let model_list_scroll = app.read(cx).model_list_scroll.clone();
         assert!(
             model_list_scroll.max_offset().y > px(0.),
             "model list content does not overflow"
         );
         let list_bounds = model_list_scroll.bounds();
+        assert!(list_bounds.size.height <= px(170.));
         let start = point(list_bounds.right() - px(8.), list_bounds.top() + px(20.));
         let end = point(list_bounds.right() - px(8.), list_bounds.bottom() - px(20.));
         let list_offset_before = model_list_scroll.offset().y;
@@ -415,6 +509,297 @@ async fn scrollbars_reach_overflowing_switch_and_model_content(cx: &mut TestAppC
         );
     })
     .unwrap_or_else(|error| panic!("cannot inspect model list scrolling: {error}"));
+}
+
+#[gpui_kit::test]
+async fn narrow_model_list_height_tracks_small_catalogs(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("models-codex.json");
+    let models = (0..2)
+        .map(|index| {
+            format!(
+                r#"{{"slug":"small-model-{index}","display_name":"Small Model {index}","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{{"effort":"high","description":"Synthetic high"}}],"priority":{index}}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    fs::write(
+        &catalog_path,
+        format!(r#"{{"catalog_version":3,"models":[{models}]}}"#),
+    )
+    .unwrap_or_else(|error| panic!("cannot write small model catalog: {error}"));
+    configure_catalog_path(&home.join("config.toml"), &catalog_path);
+
+    let (window, app) = open(cx, home, 720., 560.);
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let scroll = app.read(cx).model_list_scroll.clone();
+        assert_eq!(
+            scroll.bounds().size.height,
+            px(64.),
+            "two rows should use two 32px slots"
+        );
+        assert_eq!(scroll.max_offset().y, px(0.));
+        assert_buttons_fit_without_overlap(
+            window,
+            cx,
+            &["catalog-save", "catalog-discard", "restart"],
+        );
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect compact model list: {error}"));
+}
+
+#[gpui_kit::test]
+async fn api_key_can_be_cleared_after_target_changes_to_subscription(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+
+    let original_key_entity = app.read_with(cx, |view, _| view.key.entity_id());
+    cx.update_window(window, |_, window, cx| {
+        let key = app.read(cx).key.clone();
+        key.update(cx, |state, cx| {
+            state.set_value("synthetic-key-to-clear", window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot seed API key input: {error}"));
+    click(cx, window, "subscription");
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("clear-api-key").visible());
+        assert_ne!(window.find("clear-api-key").disabled(), Some(true));
+        window.click("clear-api-key", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot clear API key from subscription target: {error}"));
+
+    assert!(app.read_with(cx, |view, cx| view.key.read(cx).value().is_empty()));
+    assert_ne!(
+        app.read_with(cx, |view, _| view.key.entity_id()),
+        original_key_entity,
+        "clearing the API key must replace the input entity and its edit history"
+    );
+}
+
+#[gpui_kit::test]
+async fn preview_review_can_return_or_cancel_without_losing_input_or_writing_files(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let (window, app) = open(cx, home.clone(), 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+
+    let api_key = "synthetic-preview-cancel-key";
+    cx.update_window(window, |_, window, cx| {
+        let key = app.read(cx).key.clone();
+        key.update(cx, |state, cx| state.set_value(api_key, window, cx));
+    })
+    .unwrap_or_else(|error| panic!("cannot seed test API key: {error}"));
+    let config_before = fs::read(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot read test config: {error}"));
+    let auth_before = fs::read(home.join("auth.json"))
+        .unwrap_or_else(|error| panic!("cannot read test authentication: {error}"));
+    let vault_before = fs::read(home.join("auth-switcher-v2/modes.enc"))
+        .unwrap_or_else(|error| panic!("cannot read test mode archive: {error}"));
+
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+    cx.update_window(window, |_, window, cx| {
+        assert_buttons_fit_without_overlap(
+            window,
+            cx,
+            &["back-to-settings", "cancel-preview", "apply"],
+        );
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect 1040px review layout: {error}"));
+    assert_eq!(app.read_with(cx, |view, _| view.tab), MainTab::Review);
+    assert!(app.read_with(cx, |view, _| view.prepared.is_some()));
+    assert_eq!(
+        fs::read(home.join("config.toml"))
+            .unwrap_or_else(|error| panic!("cannot read config after preview: {error}")),
+        config_before
+    );
+    assert_eq!(
+        fs::read(home.join("auth.json"))
+            .unwrap_or_else(|error| panic!("cannot read authentication after preview: {error}")),
+        auth_before
+    );
+    assert_eq!(
+        fs::read(home.join("auth-switcher-v2/modes.enc"))
+            .unwrap_or_else(|error| panic!("cannot read archive after preview: {error}")),
+        vault_before
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        app.update(cx, |this, cx| {
+            this.busy = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert_eq!(window.find("back-to-settings").disabled(), Some(true));
+        assert_eq!(window.find("cancel-preview").disabled(), Some(true));
+        window.click("back-to-settings", cx);
+        window.click("cancel-preview", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot check busy review controls: {error}"));
+    assert_eq!(app.read_with(cx, |view, _| view.tab), MainTab::Review);
+    assert!(app.read_with(cx, |view, _| view.prepared.is_some()));
+
+    cx.update_window(window, |_, _, cx| {
+        app.update(cx, |this, cx| {
+            this.busy = false;
+            cx.notify();
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot release synthetic busy state: {error}"));
+    click(cx, window, "back-to-settings");
+    assert_eq!(app.read_with(cx, |view, _| view.tab), MainTab::Switch);
+    assert!(app.read_with(cx, |view, _| view.prepared.is_some()));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view.key.read(cx).value().to_string()),
+        api_key
+    );
+
+    click(cx, window, "switch-tab");
+    click(cx, window, "cancel-preview");
+    assert_eq!(app.read_with(cx, |view, _| view.tab), MainTab::Switch);
+    assert!(app.read_with(cx, |view, _| view.prepared.is_none()));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view.key.read(cx).value().to_string()),
+        api_key
+    );
+    assert_eq!(
+        fs::read(home.join("config.toml"))
+            .unwrap_or_else(|error| panic!("cannot read config after cancel: {error}")),
+        config_before
+    );
+    assert_eq!(
+        fs::read(home.join("auth.json"))
+            .unwrap_or_else(|error| panic!("cannot read authentication after cancel: {error}")),
+        auth_before
+    );
+    assert_eq!(
+        fs::read(home.join("auth-switcher-v2/modes.enc"))
+            .unwrap_or_else(|error| panic!("cannot read archive after cancel: {error}")),
+        vault_before
+    );
+}
+
+#[gpui_kit::test]
+async fn catalog_save_and_discard_preserve_selected_model_and_saved_values(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("models-codex.json");
+    fs::write(
+        &catalog_path,
+        r#"{"catalog_version":3,"models":[{"slug":"first-model","display_name":"First Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Synthetic high"}],"priority":1},{"slug":"second-model","display_name":"Second Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Synthetic high"}],"priority":2}]}"#,
+    )
+    .unwrap_or_else(|error| panic!("cannot write test catalog: {error}"));
+    configure_catalog_path(&home.join("config.toml"), &catalog_path);
+
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+    click(cx, window, "catalog-model-1");
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.selected_model), 1);
+
+    cx.update_window(window, |_, window, cx| {
+        window.click("model-name", cx);
+        window.press("end", cx);
+        window.input("-saved", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot edit selected model: {error}"));
+    click(cx, window, "catalog-save");
+    idle(cx, window, &app).await;
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.selected_model), 1);
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .model_id
+            .read(cx)
+            .value()
+            .to_string()),
+        "second-model"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .display_name
+            .read(cx)
+            .value()
+            .to_string()),
+        "Second Model-saved"
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        window.click("model-name", cx);
+        window.press("end", cx);
+        window.input("-draft", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot create discard draft: {error}"));
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    click(cx, window, "catalog-discard");
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.selected_model), 1);
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .display_name
+            .read(cx)
+            .value()
+            .to_string()),
+        "Second Model-saved"
+    );
+}
+
+#[cfg(windows)]
+#[gpui_kit::test]
+async fn restart_confirmation_traps_focus_and_escape_cancels(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+
+    click(cx, window, "restart");
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("dialog").is_some()
+    })
+    .await;
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
+        assert!(window.try_find("confirm-restart").is_some());
+        window.click("models-tab", cx);
+        assert_eq!(app.read(cx).tab, MainTab::Switch);
+        window.press("escape", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect restart confirmation: {error}"));
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("dialog").is_none()
+    })
+    .await;
+    assert_eq!(app.read_with(cx, |view, _| view.tab), MainTab::Switch);
+    assert!(app.read_with(cx, |view, _| view.message.contains("已取消重启")));
 }
 
 #[gpui_kit::test]

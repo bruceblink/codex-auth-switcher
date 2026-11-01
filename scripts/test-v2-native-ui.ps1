@@ -237,7 +237,7 @@ function Click-NativeButton([string]$Name) {
 
 function Select-Target([string]$Name) {
     $button = Wait-ForButton $Name
-    Bring-IntoView $button "button $Name" $true
+    Bring-IntoView $button "button $Name"
     Click-NativeButton $Name
 }
 
@@ -389,6 +389,31 @@ public static class NativeUiInput
     $null = Wait-ForButton "补齐模式"
 
     # The synthetic active profile is subscription, so startup selects API key as the target.
+    $beforePreview = @{}
+    foreach ($relativePath in @("config.toml", "auth.json", "auth-switcher-v2/modes.enc")) {
+        $beforePreview[$relativePath] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $script:CodexHome $relativePath)).Hash
+    }
+    $providerBefore = (Wait-ForTextInput "Provider ID").GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+    $endpointBefore = (Wait-ForTextInput "Base URL").GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+    Click-NativeButton "预览变更"
+    $null = Wait-ForButton "应用切换"
+    Click-NativeButton "返回修改"
+    $null = Wait-ForButton "预览变更"
+    $providerAfter = (Wait-ForTextInput "Provider ID").GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+    $endpointAfter = (Wait-ForTextInput "Base URL").GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+    if ($providerAfter -ne $providerBefore -or $endpointAfter -ne $endpointBefore) {
+        throw "Returning from the confirmation page did not preserve the target settings."
+    }
+    Click-NativeButton "预览变更"
+    $null = Wait-ForButton "应用切换"
+    Click-NativeButton "取消预览"
+    $null = Wait-ForButton "预览变更"
+    foreach ($relativePath in $beforePreview.Keys) {
+        $afterPreview = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $script:CodexHome $relativePath)).Hash
+        if ($afterPreview -ne $beforePreview[$relativePath]) {
+            throw "Previewing or cancelling modified the active configuration or saved modes."
+        }
+    }
     Click-NativeButton "预览变更"
     $null = Wait-ForButton "应用切换"
     Click-NativeButton "应用切换"
@@ -444,7 +469,7 @@ public static class NativeUiInput
         throw "The native GUI did not back up the previous model catalog."
     }
 
-    Write-Output "V2 native Windows UI acceptance passed: initialize, target selection, preview, API apply, subscription restore, shared-setting preservation, and model catalog load/clone/edit/save/backup."
+    Write-Output "Native Windows UI acceptance passed: initialize, target selection, confirmation/return/cancel without writes, API apply, subscription restore, shared-setting preservation, and model catalog load/clone/edit/save/backup."
     if ($HoldWindowSeconds -gt 0) {
         Write-Output "Keeping the isolated native test window open for $HoldWindowSeconds seconds for visual inspection."
         Start-Sleep -Seconds $HoldWindowSeconds
