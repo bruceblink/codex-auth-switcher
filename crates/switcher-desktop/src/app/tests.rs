@@ -477,7 +477,16 @@ async fn scrollbars_reach_overflowing_switch_and_model_content(cx: &mut TestAppC
             model_list_scroll.max_offset().y > px(0.),
             "model list content does not overflow"
         );
+        let catalog_scroll = app.read(cx).catalog_scroll.clone();
         let list_bounds = model_list_scroll.bounds();
+        catalog_scroll.set_offset(point(
+            px(0.),
+            catalog_scroll.offset().y + catalog_scroll.bounds().top() - list_bounds.top(),
+        ));
+        window.render_frame(cx);
+        let list_bounds = model_list_scroll.bounds();
+        assert!(list_bounds.top() >= catalog_scroll.bounds().top());
+        assert!(list_bounds.bottom() <= catalog_scroll.bounds().bottom());
         assert!(list_bounds.size.height <= px(170.));
         let start = point(list_bounds.right() - px(8.), list_bounds.top() + px(20.));
         let end = point(list_bounds.right() - px(8.), list_bounds.bottom() - px(20.));
@@ -487,7 +496,8 @@ async fn scrollbars_reach_overflowing_switch_and_model_content(cx: &mut TestAppC
             model_list_scroll.offset().y < list_offset_before,
             "dragging the model list scrollbar did not move the list"
         );
-        let catalog_scroll = app.read(cx).catalog_scroll.clone();
+        catalog_scroll.set_offset(point(px(0.), px(0.)));
+        window.render_frame(cx);
         assert!(
             catalog_scroll.max_offset().y > px(0.),
             "model catalog page content does not overflow"
@@ -834,6 +844,47 @@ async fn restart_confirmation_traps_focus_and_escape_cancels(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+async fn saving_catalog_refreshes_mode_readiness(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog = home.join("subscription-models.json");
+    write_model_catalog(&catalog, "demo-subscription-model");
+    configure_catalog_path(&home.join("config.toml"), &catalog);
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    assert!(
+        app.read_with(cx, |view, _| view.status.as_ref().is_some_and(|status| {
+            status
+                .modes
+                .iter()
+                .any(|mode| mode.mode == Mode::Subscription && mode.ready)
+        }))
+    );
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+    cx.update_window(window, |_, window, cx| {
+        window.click("model-id", cx);
+        window.press("end", cx);
+        window.input("-renamed", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot rename current catalog model: {error}"));
+    click(cx, window, "catalog-save");
+    idle(cx, window, &app).await;
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert!(
+        app.read_with(cx, |view, _| view.status.as_ref().is_some_and(|status| {
+            status.modes.iter().any(|mode| {
+                mode.mode == Mode::Subscription && !mode.ready && !mode.issue.is_empty()
+            })
+        }))
+    );
+}
+
+#[gpui_kit::test]
 async fn selecting_model_catalog_loads_it_and_preserves_current_data_on_cancel_or_error(
     cx: &mut TestAppContext,
 ) {
@@ -865,6 +916,9 @@ async fn selecting_model_catalog_loads_it_and_preserves_current_data_on_cancel_o
     let dialogs = test_dialogs(pick_model_catalog);
     let (window, app) = open_with_dialogs(cx, home.clone(), 1040., 740., dialogs);
     idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, cx| {
+        view.catalog.configured_path.read(cx).value().is_empty()
+    }));
 
     click(cx, window, "initialize");
     idle(cx, window, &app).await;
@@ -890,6 +944,23 @@ async fn selecting_model_catalog_loads_it_and_preserves_current_data_on_cancel_o
     assert!(app.read_with(cx, |view, _| view.prepared.is_none()));
     assert!(app.read_with(cx, |view, _| view.restart_needed));
     assert!(app.read_with(cx, |view, _| view.message.contains("重启 Codex")));
+    assert!(app.read_with(cx, |view, _| view.message.contains("关联到 config.toml")));
+    assert_eq!(
+        app.read_with(cx, |view, _| view
+            .status
+            .as_ref()
+            .and_then(|status| status.model_catalog_path.clone())),
+        Some(selected_path.to_string_lossy().into_owned())
+    );
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .configured_path
+            .read(cx)
+            .value()
+            .to_string()),
+        selected_path.to_string_lossy()
+    );
     let configured = fs::read(home.join("config.toml"))
         .unwrap_or_else(|error| panic!("cannot read configured test config: {error}"));
     assert!(String::from_utf8_lossy(&configured).contains("selected-models.json"));
@@ -1038,6 +1109,12 @@ async fn successful_mode_switch_clears_the_previous_model_catalog(cx: &mut TestA
 
     let (window, app) = open(cx, home.clone(), 1040., 740.);
     idle(cx, window, &app).await;
+    assert_eq!(
+        PathBuf::from(app.read_with(cx, |view, cx| {
+            view.catalog.configured_path.read(cx).value().to_string()
+        })),
+        subscription_catalog
+    );
     click(cx, window, "initialize");
     idle(cx, window, &app).await;
     click(cx, window, "models-tab");
@@ -1065,6 +1142,12 @@ async fn successful_mode_switch_clears_the_previous_model_catalog(cx: &mut TestA
     assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
     assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 0);
     assert!(app.read_with(cx, |view, _| view.catalog.catalog.is_none()));
+    assert_eq!(
+        PathBuf::from(app.read_with(cx, |view, cx| {
+            view.catalog.configured_path.read(cx).value().to_string()
+        })),
+        api_catalog
+    );
 
     click(cx, window, "models-tab");
     click(cx, window, "catalog-load");

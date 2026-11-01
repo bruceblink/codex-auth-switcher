@@ -635,7 +635,6 @@ impl Switcher {
 
     fn catalog_workspace(&self, wide: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let catalog = self.catalog.catalog.as_ref();
-        let catalog_path = catalog.map(|catalog| catalog.path.clone());
         let directory = self.store.paths.home.to_string_lossy().into_owned();
         let (actual_mode, actual_state) = self
             .status
@@ -860,12 +859,25 @@ impl Switcher {
                     .child(
                         Button::new("catalog-choose")
                             .compact()
-                            .label("选择模型目录 JSON")
+                            .icon(IconName::FolderOpen)
+                            .label("选择并关联 JSON")
+                            .accessibility_label("选择并关联模型目录 JSON")
+                            .tooltip("关联到当前模式 config.toml 的 model_catalog_json")
                             .disabled(!enabled || self.catalog.dirty)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.choose_model_catalog(window, cx)
                             })),
                     ),
+            )
+            .child(
+                div().id("catalog-association").mb_4().child(field(
+                    "关联模型文件",
+                    Input::new(&self.catalog.configured_path)
+                        .id("catalog-configured-path")
+                        .aria_label("config.toml 关联的模型目录")
+                        .readonly(true),
+                    wide,
+                )),
             )
             .child(
                 div()
@@ -898,12 +910,6 @@ impl Switcher {
                             ),
                     ),
             )
-            .when(catalog_path.is_some(), |view| {
-                view.child(hint(
-                    format!("当前模型目录：{}", catalog_path.clone().unwrap_or_default()),
-                    false,
-                ))
-            })
             .when(self.catalog.dirty, |view| {
                 view.child(hint(
                     "有未保存改动。保存会写入模型目录；放弃会恢复上次读取的内容。",

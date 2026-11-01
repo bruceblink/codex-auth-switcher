@@ -108,6 +108,7 @@ fn empty_directory_status_is_read_only_and_reports_missing_config() -> anyhow::R
     assert!(!status.initialized);
     assert_eq!(status.mode, None);
     assert_eq!(status.auth_mode, None);
+    assert_eq!(status.model_catalog_path, None);
     assert!(!data.store.paths.config().exists());
     assert!(!data.store.paths.auth().exists());
     assert!(!data.store.paths.state().exists());
@@ -711,6 +712,10 @@ fn configure_model_catalog_without_a_vault_updates_only_config_and_sanitized_bac
     let catalog = data.store.configure_model_catalog(&catalog_path)?;
 
     assert_eq!(catalog.path, catalog_path.to_string_lossy());
+    assert_eq!(
+        data.store.status()?.model_catalog_path.as_deref(),
+        catalog_path.to_str()
+    );
     assert_eq!(catalog.models.len(), 1);
     assert!(!data.store.paths.vault().exists());
     let configured = config::parse(&fs::read(data.store.paths.config())?)?;

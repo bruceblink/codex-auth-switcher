@@ -274,6 +274,13 @@ impl Switcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.catalog.configured_path.update(cx, |state, cx| {
+            state.set_value(
+                status.model_catalog_path.as_deref().unwrap_or_default(),
+                window,
+                cx,
+            )
+        });
         if let Some(profile) = status
             .modes
             .iter()

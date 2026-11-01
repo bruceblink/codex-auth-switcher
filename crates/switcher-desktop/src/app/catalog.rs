@@ -21,6 +21,7 @@ pub(crate) struct CatalogEditor {
     baseline: Option<ModelCatalog>,
     pub(crate) selected_model: usize,
     pub(crate) dirty: bool,
+    pub(crate) configured_path: Entity<InputState>,
     pub(crate) model_id: Entity<InputState>,
     pub(crate) display_name: Entity<InputState>,
     pub(crate) visibility: Entity<InputState>,
@@ -33,6 +34,7 @@ pub(crate) struct CatalogEditor {
 
 impl CatalogEditor {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Switcher>) -> Self {
+        let configured_path = input("Codex 内置模型目录", false, 4096, window, cx);
         let model_id = input("model-id", false, 128, window, cx);
         let display_name = input("模型名称", false, 120, window, cx);
         let visibility = input("list", false, 32, window, cx);
@@ -69,6 +71,7 @@ impl CatalogEditor {
             baseline: None,
             selected_model: 0,
             dirty: false,
+            configured_path,
             model_id,
             display_name,
             visibility,
@@ -101,6 +104,8 @@ impl CatalogEditor {
         window: &mut Window,
         cx: &mut Context<Switcher>,
     ) {
+        self.configured_path
+            .update(cx, |state, cx| state.set_value(&catalog.path, window, cx));
         let selected_slug = self
             .catalog
             .as_ref()
@@ -138,6 +143,7 @@ impl CatalogEditor {
         self.dirty = false;
         self.priority_valid = true;
         for entity in [
+            &self.configured_path,
             &self.model_id,
             &self.display_name,
             &self.visibility,
@@ -327,15 +333,32 @@ impl Switcher {
                     this.execute(
                         window,
                         cx,
-                        move |store| store.configure_model_catalog(&path),
-                        |this, catalog, window, cx| {
+                        move |store| {
+                            let catalog = store.configure_model_catalog(&path)?;
+                            Ok((catalog, store.status()))
+                        },
+                        |this, (catalog, status), window, cx| {
                             let path = catalog.path.clone();
                             this.catalog.load(catalog, window, cx);
                             this.prepared = None;
                             this.restart_needed = true;
-                            this.message =
-                                format!("已选择模型目录：{path}。请重启 Codex 让模型设置生效。");
+                            this.message = format!(
+                                "已将模型目录关联到 config.toml：{path}。重启 Codex 后生效。"
+                            );
                             this.error = false;
+                            match status {
+                                Ok(status) => {
+                                    this.status = Some(status);
+                                }
+                                Err(error) => {
+                                    this.status = None;
+                                    this.message.push_str(&format!(
+                                        "。状态读取失败：{}",
+                                        super::format::user_error(&error)
+                                    ));
+                                    this.error = true;
+                                }
+                            }
                         },
                     );
                 } else {
@@ -371,8 +394,11 @@ impl Switcher {
         self.execute(
             window,
             cx,
-            move |store| store.save_model_catalog(catalog),
-            |this, (catalog, saved), window, cx| {
+            move |store| {
+                let saved = store.save_model_catalog(catalog)?;
+                Ok((saved, store.status()))
+            },
+            |this, ((catalog, saved), status), window, cx| {
                 this.catalog.load(catalog, window, cx);
                 this.restart_needed |= saved.backup.is_some();
                 this.message = match saved.backup {
@@ -380,6 +406,17 @@ impl Switcher {
                     None => "模型目录没有变化".into(),
                 };
                 this.error = false;
+                match status {
+                    Ok(status) => this.status = Some(status),
+                    Err(error) => {
+                        this.status = None;
+                        this.message.push_str(&format!(
+                            "。状态读取失败：{}",
+                            super::format::user_error(&error)
+                        ));
+                        this.error = true;
+                    }
+                }
             },
         );
     }

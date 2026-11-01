@@ -77,6 +77,8 @@ pub struct ModeStatus {
 pub struct Status {
     pub config_path: String,
     pub config_exists: bool,
+    /// Explicit catalog resolved from config.toml; None uses Codex's built-in catalog.
+    pub model_catalog_path: Option<String>,
     pub mode: Option<Mode>,
     pub auth_mode: Option<Mode>,
     pub provider: String,
@@ -348,6 +350,8 @@ impl Store {
         Ok(Status {
             config_path: self.paths.config().to_string_lossy().into(),
             config_exists,
+            model_catalog_path: configured_model_catalog_path(&doc, &self.paths.home)?
+                .map(|path| path.to_string_lossy().into_owned()),
             mode,
             auth_mode: config::auth_mode(auth.as_deref())?,
             provider: config::provider(&doc)?.into(),
