@@ -101,6 +101,34 @@ function Wait-ForButtonDisabled([string]$Name) {
     throw "The native GUI button '$Name' did not become disabled after saving."
 }
 
+function Wait-ForSavedModelCatalog([string]$Path) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            try {
+                $catalog = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+                $models = @($catalog.models)
+                $backup = Get-ChildItem -LiteralPath (Split-Path -Parent $Path) `
+                    -Filter "$(Split-Path -Leaf $Path).bak-*" -File -ErrorAction SilentlyContinue
+                if ($catalog.catalog_marker -eq "native-ui-synthetic" -and
+                    $models.Count -eq 2 -and
+                    $models[1].slug -eq "native-ui-cloned-model" -and
+                    $models[1].display_name -eq "Native UI Cloned Model" -and
+                    $models[1].context_window -eq 65536 -and
+                    $models[1].default_reasoning_level -eq "high" -and
+                    $null -ne $backup) {
+                    return $catalog
+                }
+            }
+            catch {
+                # The file may be between replacement and read; retry until the deadline.
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw "The native GUI did not persist the cloned model and its backup."
+}
+
 function Find-TextInput([string]$Name) {
     $window = Get-MainWindow
     if ($null -eq $window) {
@@ -465,18 +493,7 @@ public static class NativeUiInput
     Click-NativeButton "保存"
     $null = Wait-ForButtonDisabled "保存"
 
-    $savedCatalog = Get-Content -LiteralPath (Join-Path $script:CodexHome "models-codex.json") -Raw | ConvertFrom-Json
-    if ($savedCatalog.catalog_marker -ne "native-ui-synthetic" -or
-        $savedCatalog.models.Count -ne 2 -or
-        $savedCatalog.models[1].slug -ne "native-ui-cloned-model" -or
-        $savedCatalog.models[1].display_name -ne "Native UI Cloned Model" -or
-        $savedCatalog.models[1].context_window -ne 65536 -or
-        $savedCatalog.models[1].default_reasoning_level -ne "high") {
-        throw "The native GUI did not save the cloned model while preserving unknown metadata."
-    }
-    if (-not (Get-ChildItem -LiteralPath $script:CodexHome -Filter "models-codex.json.bak-*" -File)) {
-        throw "The native GUI did not back up the previous model catalog."
-    }
+    $savedCatalog = Wait-ForSavedModelCatalog (Join-Path $script:CodexHome "models-codex.json")
 
     Write-Output "Native Windows UI acceptance passed: initialize, target selection, confirmation/return/cancel without writes, API apply, subscription restore, shared-setting preservation, and model catalog load/clone/edit/save/backup."
     if ($HoldWindowSeconds -gt 0) {
