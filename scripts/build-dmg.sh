@@ -91,6 +91,36 @@ ICON_SOURCE="$REPO_DIR/crates/switcher-desktop/assets/codex-auth-switcher.png"
 [[ -s "$REPO_DIR/LICENSE" ]] || fail "GPLv3 license file is missing."
 [[ -s "$REPO_DIR/THIRD-PARTY-NOTICES.html" ]] || fail "Third-party notices are missing."
 
+# GitHub macOS runners can briefly report Resource busy while Spotlight releases the staging folder.
+hdiutil_create_with_retry() {
+    local attempt
+
+    for attempt in 1 2 3 4 5; do
+        if [[ -L "$DMG" ]]; then
+            fail "Refusing to replace a DMG symlink: $DMG"
+        fi
+        if [[ -e "$DMG" ]]; then
+            rm -f -- "$DMG"
+        fi
+        sync
+        if hdiutil create \
+            -volname "$APP_NAME" \
+            -srcfolder "$STAGING_DIR" \
+            -fs HFS+ \
+            -format ULMO \
+            -ov \
+            "$DMG" >/dev/null; then
+            return 0
+        fi
+        if [[ "$attempt" == 5 ]]; then
+            echo "hdiutil create failed after $attempt attempts." >&2
+            return 1
+        fi
+        echo "hdiutil create failed (attempt $attempt of 5); retrying in $((attempt * 5))s." >&2
+        sleep "$((attempt * 5))"
+    done
+}
+
 if ! rustup target list --toolchain stable --installed | grep -Fxq "$RUST_TARGET"; then
     fail "Rust target $RUST_TARGET is not installed. Install it with rustup target add $RUST_TARGET."
 fi
@@ -189,12 +219,7 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 [[ ! -e "$DMG" && ! -L "$DMG" ]] || fail "Refusing to replace an existing DMG: $DMG"
 cp -R "$APP" "$STAGING_DIR/$APP_NAME.app"
 ln -s /Applications "$STAGING_DIR/Applications"
-hdiutil create \
-    -volname "$APP_NAME" \
-    -srcfolder "$STAGING_DIR" \
-    -fs HFS+ \
-    -format ULMO \
-    "$DMG" >/dev/null
+hdiutil_create_with_retry
 hdiutil verify "$DMG" >/dev/null
 
 printf 'macOS app and DMG created:\n%s\n%s\nArchitecture: %s\nVersion: %s\nSignature: ad hoc; not notarized\n' \
