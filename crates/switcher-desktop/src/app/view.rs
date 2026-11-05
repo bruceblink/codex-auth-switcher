@@ -418,6 +418,18 @@ impl Switcher {
                     )
                 },
             );
+        let target_issue = self
+            .status
+            .as_ref()
+            .and_then(|status| {
+                status
+                    .modes
+                    .iter()
+                    .find(|profile| profile.mode == self.target)
+            })
+            .filter(|profile| !profile.ready)
+            .map(|profile| profile.issue.clone())
+            .filter(|issue| !issue.is_empty());
         let content = div()
             .id("switch-workspace")
             .flex_1()
@@ -461,6 +473,9 @@ impl Switcher {
                 ))
             })
             .when_some(current_status, |view, summary| view.child(summary))
+            .when_some(target_issue, |view, issue| {
+                view.child(hint(format!("目标模式暂不可用：{issue}"), true))
+            })
             .when(self.status.is_none(), |view| {
                 view.child(hint("正在读取当前 Codex 配置状态。", false))
             })
@@ -511,49 +526,62 @@ impl Switcher {
                 )
             })
             .unwrap_or_else(|| "尚未保存".into());
+        let issue = saved
+            .filter(|profile| !profile.issue.is_empty())
+            .map(|profile| profile.issue.clone());
         div()
             .flex()
-            .items_center()
-            .gap_2()
+            .flex_col()
+            .gap_1()
             .min_w_0()
-            .py_1()
-            .child(
-                Icon::new(if mode == Mode::Api {
-                    IconName::Globe
-                } else {
-                    IconName::CircleUser
-                })
-                .size_4(),
-            )
             .child(
                 div()
-                    .w(px(60.))
-                    .text_sm()
-                    .child(super::format::mode_name(mode)),
-            )
-            .when(active, |row| row.child(pill("当前", rgb(0x167454).into())))
-            .child(pill(
-                if ready {
-                    "已就绪"
-                } else if saved.is_some() {
-                    "待补齐"
-                } else {
-                    "未保存"
-                },
-                if ready {
-                    rgb(0x167454).into()
-                } else {
-                    rgb(0x9b6916).into()
-                },
-            ))
-            .child(
-                div()
-                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .min_w_0()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(summary),
+                    .py_1()
+                    .child(
+                        Icon::new(if mode == Mode::Api {
+                            IconName::Globe
+                        } else {
+                            IconName::CircleUser
+                        })
+                        .size_4(),
+                    )
+                    .child(
+                        div()
+                            .w(px(60.))
+                            .text_sm()
+                            .child(super::format::mode_name(mode)),
+                    )
+                    .when(active, |row| row.child(pill("当前", rgb(0x167454).into())))
+                    .child(pill(
+                        if ready {
+                            "已就绪"
+                        } else if saved.is_some() {
+                            "待补齐"
+                        } else {
+                            "未保存"
+                        },
+                        if ready {
+                            rgb(0x167454).into()
+                        } else {
+                            rgb(0x9b6916).into()
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(summary),
+                    ),
             )
+            .when_some(issue, |card, issue| {
+                card.child(hint(format!("无法切换：{issue}"), true))
+            })
     }
 
     fn review_workspace(&self, can_apply: bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1257,6 +1285,18 @@ fn status_summary(status: &Status, cx: &Context<Switcher>) -> impl IntoElement {
         )
         .child(pill(actual_mode, rgb(0x167454).into()))
         .child(pill(state_text, state_color.into()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!(
+                    "{} · {}",
+                    super::format::setting_value(&status.provider),
+                    super::format::setting_value(&status.model),
+                )),
+        )
 }
 
 fn preview_view(preview: &Preview, cx: &Context<Switcher>) -> impl IntoElement {
