@@ -1,7 +1,6 @@
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::Window;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::InteractiveElementExt as _;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon,
@@ -29,85 +28,73 @@ impl Switcher {
         let check = &self.updater;
         let mut content = div()
             .id("update-workspace")
+            .test_support()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.update_scroll)
-            .lock_scroll_axis()
-            .px_5()
-            .py_3()
-            .child(update_section_label("当前版本"))
+            .px_6()
+            .py_5()
             .child(
                 div()
-                    .mt_2()
-                    .flex()
-                    .gap_3()
-                    .child(div().flex_1().min_w_0().child(update_value(
-                        "已安装版本",
-                        format!("v{}", env!("CARGO_PKG_VERSION")),
-                        cx,
-                    )))
-                    .child(div().flex_1().min_w_0().child(update_value(
-                        "当前平台",
-                        platform_name(),
-                        cx,
-                    ))),
-            )
-            .child(
-                div()
-                    .mt_4()
-                    .pt_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(update_section_label("自动检查"))
+                    .id("update-page-heading")
+                    .test_support()
+                    .mb_5()
                     .child(
                         div()
-                            .mt_2()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                Checkbox::new("update-auto-check")
-                                    .label("自动检查稳定版更新")
-                                    .accessibility_label("自动检查稳定版更新")
-                                    .tooltip(
-                                        "启动后延迟检查；已是最新版时，24 小时内不重复自动检查。",
-                                    )
-                                    .checked(check.preferences.auto_check)
-                                    .disabled(!check.preferences_loaded || check.preferences_saving)
-                                    .on_click(cx.listener(|this, checked, window, cx| {
-                                        this.set_auto_check(*checked, window, cx);
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if check.preferences_saving {
-                                        "正在保存设置…"
-                                    } else {
-                                        "上次成功检查"
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format_last_check(
-                                        check.preferences.last_successful_check.as_ref(),
-                                    )),
-                            ),
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("软件更新"),
+                    )
+                    .child(
+                        div()
+                            .mt_1()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("检查稳定版更新，并查看适用于当前平台的安装包。"),
                     ),
             )
             .child(
                 div()
+                    .id("update-current-version")
+                    .test_support()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(0xe5e9ef))
+                    .bg(rgb(0xf7f9fb))
+                    .px_4()
+                    .py_3()
+                    .child(update_section_label("当前版本"))
+                    .child(
+                        div()
+                            .mt_3()
+                            .flex()
+                            .gap_6()
+                            .child(div().flex_1().min_w_0().child(update_value(
+                                "已安装版本",
+                                format!("v{}", env!("CARGO_PKG_VERSION")),
+                                cx,
+                            )))
+                            .child(div().flex_1().min_w_0().child(update_value(
+                                "当前平台",
+                                platform_name(),
+                                cx,
+                            ))),
+                    ),
+            )
+            .child(
+                div()
+                    .id("update-status-panel")
+                    .test_support()
                     .mt_4()
-                    .pt_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(0xe5e9ef))
+                    .bg(rgb(0xf7f9fb))
+                    .px_4()
+                    .py_3()
                     .child(update_section_label("检查结果"))
                     .child(update_status_summary(&check.status, cx)),
             );
@@ -131,12 +118,15 @@ impl Switcher {
                 )
                 .child(
                     div()
+                        .id("update-release-notes-panel")
+                        .test_support()
                         .mt_2()
                         .rounded_md()
                         .border_1()
-                        .border_color(cx.theme().border)
-                        .px_3()
-                        .py_2()
+                        .border_color(rgb(0xe5e9ef))
+                        .bg(rgb(0xf7f9fb))
+                        .px_4()
+                        .py_3()
                         .min_w_0()
                         .child(
                             TextView::markdown(
@@ -157,8 +147,69 @@ impl Switcher {
             }
         }
 
+        content = content.child(
+            div()
+                .id("update-preferences")
+                .test_support()
+                .mt_5()
+                .pt_4()
+                .border_t_1()
+                .border_color(rgb(0xe5e9ef))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("偏好设置"),
+                )
+                .child(
+                    div()
+                        .mt_1()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("自动检查只会提醒你，不会自动下载或安装更新。"),
+                )
+                .child(
+                    div()
+                        .mt_3()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            Checkbox::new("update-auto-check")
+                                .label("自动检查稳定版更新")
+                                .accessibility_label("自动检查稳定版更新")
+                                .tooltip("启动后延迟检查；已是最新版时，24 小时内不重复自动检查。")
+                                .checked(check.preferences.auto_check)
+                                .disabled(!check.preferences_loaded || check.preferences_saving)
+                                .on_click(cx.listener(|this, checked, window, cx| {
+                                    this.set_auto_check(*checked, window, cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(if check.preferences_saving {
+                                    "正在保存设置…"
+                                } else {
+                                    "上次成功检查"
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format_last_check(
+                                    check.preferences.last_successful_check.as_ref(),
+                                )),
+                        ),
+                ),
+        );
+
         div()
             .id("update-workspace-container")
+            .test_support()
             .relative()
             .flex()
             .flex_col()
@@ -573,6 +624,8 @@ fn update_status_summary(status: &UpdateStatus, cx: &Context<Switcher>) -> impl 
 
     div()
         .mt_2()
+        .px_4()
+        .py_3()
         .flex()
         .items_center()
         .gap_2()

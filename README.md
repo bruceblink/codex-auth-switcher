@@ -49,13 +49,14 @@ cargo build --release --locked
 ## 配置与安全边界
 
 - 订阅默认 provider：`openai`。
-- 首次使用时，工具创建缺失的 `config.toml`，使用 Codex 内置 `openai` provider 和官方 API 地址 `https://api.openai.com/v1`。模型由 Codex 默认选择。
+- 只有 `config.toml` 和 `auth.json` 都不存在时，界面提示“初始化”。只缺配置时提示“补齐配置”；只缺认证时提示登录、导入认证或输入 API key。创建配置使用 Codex 内置 `openai` provider 和官方 API 地址 `https://api.openai.com/v1`，模型由 Codex 默认选择。
 - `openai` 与 `OpenAI` 是不同的 ID。初始化会优先导入现有配置，不用默认值覆盖已有网关。使用其他地址时，请填写自定义 provider ID。
 - API 模式保留现有 provider 地址和能力字段，并通过 `requires_openai_auth = true` 从 `auth.json` 读取 key。
 - 模式快照会保留 Codex 的模型详细度、自动压缩设置、模型指令文件、审查模型以及 ChatGPT/OSS provider 字段；旧存档缺少这些字段时沿用活动配置。
 - API key 只从输入框或已保存认证读取。程序不会读取 `AUTOCODE_API_KEY` 或 provider 的 `env_key` 环境变量。输入框里的密钥成功应用后，程序会写入 Windows 当前用户的持久环境变量 `AUTOCODE_API_KEY`；切换失败时不会写入。预览会显示认证来源，不显示密钥。应用后输入内容会清除。
 - 没有 `auth.json` 时，工具不会生成占位认证。订阅认证由用户在 Codex 中登录生成；API key 认证在用户输入有效格式的 key 并应用后生成。
-- “Codex 模型目录”可以读取已配置的本地目录，也可以选择已有 JSON 文件。选择文件后，工具只更新当前活动模式的 `model_catalog_json`，保留另一模式的路径。相对路径以 `config.toml` 所在目录为基准。新增条目会复制所选模型的其他能力字段。保存前会检查字段和重复 ID，并在目录文件旁创建不覆盖的备份；检测到文件或配置路径变化时会拒绝保存。工具不会把缓存当成可编辑配置；Codex 的配置文件或启动参数可能覆盖主配置。
+- “模型目录”支持独立打开 JSON、搜索、新增、复制和配置模型。“保存到 JSON”只写入打开的文件；“用于当前 Codex 模式”是单独的关联操作，只更新当前模式的 `model_catalog_json`，保留另一模式的路径。相对路径以 `config.toml` 所在目录为基准。新增条目复制所选模型的其他能力字段，文件最多包含 512 个模型。保存前检查字段和重复 ID，并创建不覆盖的备份；外部文件变化时拒绝保存。工具不会把缓存当成可编辑配置；其他配置层或启动参数可能覆盖主配置。
+- “配置检查”读取 `config.toml`，检查 TOML 语法、部分常用字段类型和已核实的过时项。清理只删除确认已无作用的设置，保留未知字段、审批、沙箱和认证设置。确认页只显示设置名称；写入前核对文件版本，并备份被删除的设置。有限规则检查不等于完整 Codex 配置校验。
 - 本地模式存档位于 `.codex/auth-switcher-v2/`。`modes.enc` 与 `pending.enc` 使用 AES-256-GCM；`vault.key` 与密文分开保存。
 - 配置变化时生成的 `config.toml.bak-*` 只保存当前模式参数和选中 provider，不复制共享设置或凭据。活动配置中的共享设置保持不变。
 - Windows 状态目录只允许当前用户和 SYSTEM 访问。密钥缺失、密文认证失败或外部文件冲突时，程序停止并保留现有数据。
@@ -109,6 +110,7 @@ cargo install --locked --version 0.9.3 --features cli cargo-about
 
 - [Rust + GPUI Kit 开发计划](docs/01-development-plan.md)
 - [用户指南](docs/06-v2-user-guide.md)
+- [Windows 界面验收记录](docs/07-ui-acceptance.md)
 - [第一版验证历史](docs/04-v1-validation.md)
 
 第一版验证记录仅保留历史证据。当前项目只维护 Rust + GPUI Kit 桌面程序，不包含 Python 第一版或命令行界面。当前认证存储使用 Codex 文件认证；不支持系统钥匙串、跨账户迁移或无人值守登录。

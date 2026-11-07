@@ -6,6 +6,7 @@
 
 mod catalog;
 mod format;
+mod health;
 mod update;
 mod update_view;
 mod view;
@@ -85,6 +86,7 @@ pub(crate) enum MainTab {
     Switch,
     Review,
     Models,
+    Health,
     Update,
 }
 
@@ -115,6 +117,8 @@ pub(crate) struct Switcher {
     pub(crate) model_list_scroll: ScrollHandle,
     pub(crate) update_scroll: ScrollHandle,
     pub(crate) updater: UpdateController,
+    pub(crate) health_report: Option<Arc<switcher_core::config_check::ConfigCheck>>,
+    pub(crate) health_scroll: ScrollHandle,
     restart_handler: Arc<dyn Fn() -> CoreResult<()> + Send + Sync>,
 }
 
@@ -157,6 +161,7 @@ impl Switcher {
                 this.directory_needs_refresh = true;
                 this.status = None;
                 this.prepared = None;
+                this.health_report = None;
                 cx.notify();
             }
         });
@@ -202,6 +207,8 @@ impl Switcher {
             model_list_scroll: ScrollHandle::default(),
             update_scroll: ScrollHandle::default(),
             updater,
+            health_report: None,
+            health_scroll: ScrollHandle::default(),
             restart_handler: Arc::new(crate::restart::restart),
         };
         this.refresh(window, cx);
@@ -291,13 +298,15 @@ impl Switcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.catalog.configured_path.update(cx, |state, cx| {
-            state.set_value(
-                status.model_catalog_path.as_deref().unwrap_or_default(),
-                window,
-                cx,
-            )
-        });
+        if !self.catalog.has_catalog() {
+            self.catalog.configured_path.update(cx, |state, cx| {
+                state.set_value(
+                    status.model_catalog_path.as_deref().unwrap_or_default(),
+                    window,
+                    cx,
+                )
+            });
+        }
         if let Some(profile) = status
             .modes
             .iter()
@@ -344,12 +353,13 @@ impl Switcher {
                     Mode::Api
                 };
                 this.sync_profiles(&status, window, cx);
-                this.message = if !status.config_exists {
-                    "首次使用：请创建默认配置，再登录 Codex 或输入 API key。"
-                } else if status.initialized {
-                    "已读取本地状态"
-                } else {
-                    "尚未初始化模式存档"
+                this.message = match (status.config_exists, status.auth_exists) {
+                    (false, false) => "未找到 config.toml 和 auth.json。请先初始化配置。",
+                    (false, true) => "已找到 auth.json，缺少 config.toml。请补齐配置。",
+                    (true, false) => {
+                        "已读取配置，缺少 auth.json。请登录 Codex、导入认证或输入 API key。"
+                    }
+                    (true, true) => "已读取配置和认证。请选择目标模式，再预览变更。",
                 }
                 .into();
                 this.directory_needs_refresh = false;
@@ -420,10 +430,19 @@ impl Switcher {
             }
         };
         let target = self.target;
+        let needs_archive = self
+            .status
+            .as_ref()
+            .is_some_and(|status| !status.initialized);
         self.execute(
             window,
             cx,
-            move |store| store.prepare(target, options),
+            move |store| {
+                if needs_archive {
+                    store.initialize(Default::default())?;
+                }
+                store.prepare(target, options)
+            },
             |this, prepared, _, _| {
                 this.message = if prepared.preview.changed {
                     "预览已生成，尚未写入配置"
@@ -451,56 +470,53 @@ impl Switcher {
             window,
             cx,
             move |store| Ok(store.apply(prepared).map(|result| (result, store.status()))),
-            |this, result, window, cx| {
-                this.clear_key(window, cx);
-                match result {
-                    Ok((result, status)) => {
-                        this.tab = MainTab::Switch;
-                        if result.changed {
-                            this.catalog.clear_loaded(window, cx);
-                        }
-                        this.restart_needed |= result.restart_required;
-                        this.message = if result.changed {
-                            format!(
-                                "已切换到 {}。重启 Codex 后请新建会话。",
-                                format::mode_name(result.target)
-                            )
+            |this, result, window, cx| match result {
+                Ok((result, status)) => {
+                    this.clear_key(window, cx);
+                    this.tab = MainTab::Switch;
+                    if result.changed {
+                        this.catalog.clear_loaded(window, cx);
+                    }
+                    this.restart_needed |= result.restart_required;
+                    this.message = if result.changed {
+                        format!(
+                            "已切换到 {}。重启 Codex 后请新建会话。",
+                            format::mode_name(result.target)
+                        )
+                    } else {
+                        "配置未变化".into()
+                    };
+                    if let Some(persisted) = result.environment_persisted {
+                        if persisted {
+                            this.message
+                                .push_str(" API key 已保存到当前用户环境变量 AUTOCODE_API_KEY。");
                         } else {
-                            "配置未变化".into()
-                        };
-                        if let Some(persisted) = result.environment_persisted {
-                            if persisted {
-                                this.message.push_str(
-                                    " API key 已保存到当前用户环境变量 AUTOCODE_API_KEY。",
-                                );
-                            } else {
-                                this.message.push_str(
-                                    " 切换已完成，但无法保存当前用户环境变量 AUTOCODE_API_KEY。",
-                                );
-                                this.error = true;
-                            }
-                        }
-                        match status {
-                            Ok(status) => {
-                                this.sync_profiles(&status, window, cx);
-                                this.status = Some(status);
-                            }
-                            Err(error) => {
-                                this.status = None;
-                                this.message.push_str(&format!(
-                                    " 状态读取失败：{}",
-                                    format::user_error(&error)
-                                ));
-                                this.error = true;
-                            }
+                            this.message.push_str(
+                                " 切换已完成，但无法保存当前用户环境变量 AUTOCODE_API_KEY。",
+                            );
+                            this.error = true;
                         }
                     }
-                    Err(error) => {
-                        this.tab = MainTab::Switch;
-                        this.message = format::user_error(&error);
-                        this.error = true;
-                        this.prepared = None;
+                    match status {
+                        Ok(status) => {
+                            this.sync_profiles(&status, window, cx);
+                            this.status = Some(status);
+                        }
+                        Err(error) => {
+                            this.status = None;
+                            this.message.push_str(&format!(
+                                " 状态读取失败：{}",
+                                format::user_error(&error)
+                            ));
+                            this.error = true;
+                        }
                     }
+                }
+                Err(error) => {
+                    this.tab = MainTab::Switch;
+                    this.message = format::user_error(&error);
+                    this.error = true;
+                    this.prepared = None;
                 }
             },
         );
@@ -657,11 +673,15 @@ pub(crate) fn run(store: Store) -> anyhow::Result<()> {
         .run(move |cx| {
             gpui_kit::init(cx);
             gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Light, None, cx);
-            let theme = gpui_kit::component::Theme::global_mut(cx);
-            theme.primary = rgb(0x167454).into();
-            theme.primary_hover = rgb(0x126247).into();
-            theme.primary_active = rgb(0x0f513b).into();
-            theme.tokens = (&theme.colors).into();
+            gpui_kit::component::Theme::update(cx, |theme| {
+                theme.primary = rgb(0x167454).into();
+                theme.primary_hover = rgb(0x126247).into();
+                theme.primary_active = rgb(0x0f513b).into();
+                theme.button_primary = theme.primary;
+                theme.button_primary_hover = theme.primary_hover;
+                theme.button_primary_active = theme.primary_active;
+                theme.button_primary_foreground = rgb(0xffffff).into();
+            });
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();

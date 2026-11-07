@@ -420,10 +420,19 @@ public static class NativeUiInput
         throw "The packaged GUI did not create a native window."
     }
 
-    $null = Wait-ForButton "初始化模式"
-    Click-NativeButton "初始化模式"
-    # The test directory starts without a mode vault. Wait for initialize to finish.
-    $null = Wait-ForButton "补齐模式"
+    $null = Wait-ForButton "保存当前模式"
+    Click-NativeButton "保存当前模式"
+    # The button label stays the same; wait for the archive before continuing.
+    $archivePath = Join-Path $script:CodexHome "auth-switcher-v2/modes.enc"
+    $archiveDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    while (-not (Test-Path -LiteralPath $archivePath -PathType Leaf) -and
+        [DateTime]::UtcNow -lt $archiveDeadline) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+        throw "The native GUI did not save the initial mode archive."
+    }
+    $null = Wait-ForButton "预览变更"
 
     # The synthetic active profile is subscription, so startup selects API key as the target.
     $beforePreview = @{}
@@ -490,8 +499,8 @@ public static class NativeUiInput
     Click-NativeButton "复制模型"
     Set-TextInputValue "模型 ID" "native-ui-cloned-model"
     Set-TextInputValue "显示名称" "Native UI Cloned Model"
-    Click-NativeButton "保存"
-    $null = Wait-ForButtonDisabled "保存"
+    Click-NativeButton "保存到 JSON"
+    $null = Wait-ForButtonDisabled "保存到 JSON"
 
     $savedCatalog = Wait-ForSavedModelCatalog (Join-Path $script:CodexHome "models-codex.json")
 

@@ -8,7 +8,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px, rgb,
+    StatefulInteractiveElement, Styled, TestSupportExt as _, Window, div,
+    prelude::FluentBuilder as _, px, rgb,
 };
 use switcher_core::{Mode, Preview, Status};
 
@@ -16,10 +17,6 @@ use super::{MainTab, Switcher};
 
 impl Render for Switcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let initialized = self
-            .status
-            .as_ref()
-            .is_some_and(|status| status.initialized);
         let recovery_pending = self
             .status
             .as_ref()
@@ -29,7 +26,7 @@ impl Render for Switcher {
             && self
                 .status
                 .as_ref()
-                .is_some_and(|status| status.initialized && !status.recovery_pending);
+                .is_some_and(|status| status.config_exists && !status.recovery_pending);
         let can_apply = !self.busy
             && !self.catalog.dirty
             && self
@@ -38,39 +35,51 @@ impl Render for Switcher {
                 .is_some_and(|prepared| prepared.preview.changed);
         let restart_block_reason = self.restart_block_reason(cx);
         let can_restart = restart_block_reason.is_none();
-        let wide = window.viewport_size().width >= px(900.);
-
-        let mut root = div()
-            .id("switcher-root")
-            .relative()
-            .size_full()
+        let sidebar = window.viewport_size().width >= px(1000.);
+        let wide = sidebar;
+        let workspace = div()
             .flex()
             .flex_col()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .child(self.header(cx))
-            .child(self.tabs(cx));
-
-        root = match self.tab {
-            MainTab::Switch => {
-                root.child(self.switch_workspace(wide, initialized, recovery_pending, cx))
-            }
-            MainTab::Review => root.child(self.review_workspace(can_apply, cx)),
-            MainTab::Models => root.child(self.catalog_workspace(wide, cx)),
-            MainTab::Update => root.child(self.update_workspace(cx)),
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .bg(rgb(0xffffff));
+        let workspace = match self.tab {
+            MainTab::Switch => workspace.child(self.switch_workspace(wide, recovery_pending, cx)),
+            MainTab::Review => workspace.child(self.review_workspace(can_apply, cx)),
+            MainTab::Models => workspace.child(self.catalog_workspace(wide, cx)),
+            MainTab::Health => workspace.child(self.configuration_workspace(cx)),
+            MainTab::Update => workspace.child(self.update_workspace(cx)),
         };
-
-        if self.tab == MainTab::Update {
-            root.child(self.update_footer(cx))
-        } else {
-            root.child(self.footer(
+        let workspace = match self.tab {
+            MainTab::Update => workspace.child(self.update_footer(cx)),
+            MainTab::Health => workspace.child(self.configuration_footer(cx)),
+            _ => workspace.child(self.footer(
                 can_preview,
                 can_apply,
                 can_restart,
                 restart_block_reason,
                 cx,
-            ))
-        }
+            )),
+        };
+        div()
+            .id("switcher-root")
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(0xf7f9fb))
+            .text_color(cx.theme().foreground)
+            .child(self.header(cx))
+            .child(
+                div()
+                    .flex()
+                    .when(!sidebar, |layout| layout.flex_col())
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.tabs(sidebar, cx))
+                    .child(workspace),
+            )
     }
 }
 
@@ -91,9 +100,15 @@ impl Switcher {
         } else if self
             .status
             .as_ref()
-            .is_some_and(|status| !status.initialized)
+            .is_some_and(|status| !status.config_exists && !status.auth_exists)
         {
-            ("未初始化", rgb(0xa36624))
+            ("首次使用", rgb(0xa36624))
+        } else if self
+            .status
+            .as_ref()
+            .is_some_and(|status| !status.config_exists || !status.auth_exists)
+        {
+            ("待补齐", rgb(0xa36624))
         } else {
             ("已就绪", rgb(0x2f7d54))
         };
@@ -102,7 +117,7 @@ impl Switcher {
             .items_center()
             .gap_3()
             .px_6()
-            .py_4()
+            .py_3()
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
@@ -129,31 +144,55 @@ impl Switcher {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("认证与模型配置"),
+                            .child("本地配置管理"),
                     ),
             )
-            .child(pill(status_text, status_color.into()))
+            .child(
+                div()
+                    .id("setup-status")
+                    .test_support()
+                    .aria_label(status_text)
+                    .child(pill(status_text, status_color.into())),
+            )
             .child(pill(
                 concat!("v", env!("CARGO_PKG_VERSION")),
                 cx.theme().muted_foreground,
             ))
     }
 
-    fn tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn tabs(&self, sidebar: bool, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
-            .items_center()
-            .gap_1()
-            .px_6()
-            .py_1()
-            .border_b_1()
+            .when(sidebar, |nav| {
+                nav.flex_col()
+                    .w(px(176.))
+                    .flex_shrink_0()
+                    .border_r_1()
+                    .p_3()
+            })
+            .when(!sidebar, |nav| {
+                nav.items_center().gap_1().px_5().py_2().border_b_1()
+            })
+            .gap_2()
             .border_color(cx.theme().border)
+            .when(sidebar, |nav| {
+                nav.child(
+                    div()
+                        .px_2()
+                        .pt_2()
+                        .pb_3()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("工作区"),
+                )
+            })
             .child(
                 Button::new("switch-tab")
                     .compact()
                     .icon(IconName::Replace)
                     .label("切换配置")
                     .accessibility_label("切换配置")
+                    .when(sidebar, |button| button.w_full().justify_start())
                     .selected(matches!(self.tab, MainTab::Switch | MainTab::Review))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab = if this.prepared.is_some() {
@@ -170,9 +209,23 @@ impl Switcher {
                     .icon(IconName::BookOpen)
                     .label("模型目录")
                     .accessibility_label("模型目录")
+                    .when(sidebar, |button| button.w_full().justify_start())
                     .selected(self.tab == MainTab::Models)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab = MainTab::Models;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("config-tab")
+                    .compact()
+                    .icon(IconName::FileText)
+                    .label("配置检查")
+                    .accessibility_label("配置检查")
+                    .when(sidebar, |button| button.w_full().justify_start())
+                    .selected(self.tab == MainTab::Health)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tab = MainTab::Health;
                         cx.notify();
                     })),
             )
@@ -195,18 +248,27 @@ impl Switcher {
                         },
                     )
                     .selected(self.tab == MainTab::Update)
+                    .when(sidebar, |button| button.w_full().justify_start())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab = MainTab::Update;
                         this.updater.update_attention = false;
                         cx.notify();
                     })),
             )
+            .when(sidebar, |nav| {
+                nav.child(div().flex_1()).child(
+                    div()
+                        .p_2()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("配置与认证仅保存在本机。操作前可预览，保存前会备份。"),
+                )
+            })
     }
 
     fn switch_workspace(
         &self,
         wide: bool,
-        initialized: bool,
         recovery_pending: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -270,17 +332,17 @@ impl Switcher {
             .status
             .as_ref()
             .map(|status| {
-                if !status.config_exists {
-                    "创建默认配置"
-                } else if status.recovery_pending {
+                if status.recovery_pending {
                     "恢复模式存档"
-                } else if initialized {
-                    "补齐模式"
+                } else if !status.config_exists && !status.auth_exists {
+                    "初始化"
+                } else if !status.config_exists {
+                    "补齐配置"
                 } else {
-                    "初始化模式"
+                    "保存当前模式"
                 }
             })
-            .unwrap_or("创建默认配置");
+            .unwrap_or("初始化");
         let current_status = self.status.as_ref().map(|status| {
             div()
                 .flex()
@@ -299,76 +361,63 @@ impl Switcher {
                 )
         });
         let target_settings = div()
-            .mt_3()
-            .pt_3()
-            .border_t_1()
+            .mt_5()
+            .p_4()
+            .rounded_lg()
+            .border_1()
             .border_color(cx.theme().border)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .mb_2()
+                    .mb_4()
                     .child(
                         div()
                             .flex_1()
+                            .text_lg()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("目标模式"),
-                    )
-                    .child(
-                        Button::new("import-config")
-                            .compact()
-                            .ghost()
-                            .icon(IconName::FileText)
-                            .label("导入配置 TOML")
-                            .disabled(self.busy || self.catalog.dirty)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.import(false, window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("import-auth")
-                            .compact()
-                            .ghost()
-                            .icon(IconName::User)
-                            .label("导入认证 JSON")
-                            .disabled(self.busy || self.catalog.dirty)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.import(true, window, cx)),
-                            ),
+                            .child("选择要使用的模式"),
                     ),
             )
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap_2()
-                    .mb_2()
+                    .gap_3()
+                    .mb_4()
                     .child(
+                        div().flex_1().min_w_0().child(
                         Button::new("subscription")
-                            .compact()
+                            .w_full()
+                            .h(px(44.))
                             .icon(IconName::CircleUser)
                             .label("订阅")
+                            .accessibility_label("订阅")
                             .selected(self.target == Mode::Subscription)
                             .disabled(self.busy)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.target = Mode::Subscription;
                                 this.prepared = None;
                                 cx.notify();
-                            })),
+                            })))
+                            .child(div().mt_2().text_xs().text_color(cx.theme().muted_foreground).child("使用在 Codex 中登录的 ChatGPT 账号")),
                     )
                     .child(
+                        div().flex_1().min_w_0().child(
                         Button::new("api")
-                            .compact()
+                            .w_full()
+                            .h(px(44.))
                             .icon(IconName::Globe)
                             .label("API key")
+                            .accessibility_label("API key")
                             .selected(self.target == Mode::Api)
                             .disabled(self.busy)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.target = Mode::Api;
                                 this.prepared = None;
                                 cx.notify();
-                            })),
+                            })))
+                            .child(div().mt_2().text_xs().text_color(cx.theme().muted_foreground).child("使用 OpenAI 或兼容服务的密钥")),
                     ),
             )
             .child(profile_fields)
@@ -396,7 +445,7 @@ impl Switcher {
                         )),
                 )
                 .child(hint(
-                    "留空时使用已保存的目标认证。新 key 会在应用切换时写入当前用户环境。",
+                    "已保存过密钥时可留空。新密钥仅在确认应用后写入认证和当前用户环境。",
                     false,
                 ))
             })
@@ -417,7 +466,21 @@ impl Switcher {
                             .child(self.clear_key_button(api_key_pending, cx)),
                     )
                 },
-            );
+            )
+            .when(self.target == Mode::Subscription, |view| {
+                view.child(hint("订阅模式恢复已保存的登录认证。首次使用请先在 Codex 完成登录，再刷新或导入认证。", false))
+            })
+            .child(div().mt_4().pt_3().border_t_1().border_color(cx.theme().border)
+                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("已有配置或认证？"))
+                .child(div().mt_1().text_xs().text_color(cx.theme().muted_foreground)
+                    .child(format!("导入到目标模式：{}。导入后仍需预览和确认，才会切换。", super::format::mode_name(self.target))))
+                .child(div().mt_2().flex().flex_wrap().gap_2()
+                    .child(Button::new("import-config").compact().ghost().icon(IconName::FileText)
+                        .label("导入配置 TOML").disabled(self.busy || self.catalog.dirty)
+                        .on_click(cx.listener(|this, _, window, cx| this.import(false, window, cx))))
+                    .child(Button::new("import-auth").compact().ghost().icon(IconName::User)
+                        .label("导入认证 JSON").disabled(self.busy || self.catalog.dirty)
+                        .on_click(cx.listener(|this, _, window, cx| this.import(true, window, cx))))));
         let content = div()
             .id("switch-workspace")
             .flex_1()
@@ -425,11 +488,14 @@ impl Switcher {
             .overflow_y_scroll()
             .track_scroll(&self.switch_scroll)
             .lock_scroll_axis()
-            .px_5()
-            .py_3()
-            .child(section_label("配置目录", cx))
+            .px_6()
+            .py_5()
+            .child(page_heading("切换配置", "选择一种使用方式，检查变更后再应用。", cx))
+            .child(workflow_steps(false, cx))
+            .child(div().mt_4().text_sm().font_weight(FontWeight::SEMIBOLD).child("正在管理的 Codex"))
             .child(
                 div()
+                    .mt_2()
                     .flex()
                     .gap_2()
                     .items_center()
@@ -461,6 +527,41 @@ impl Switcher {
                 ))
             })
             .when_some(current_status, |view, summary| view.child(summary))
+            .when_some(self.status.as_ref(), |view, status| {
+                let guidance = match (status.config_exists, status.auth_exists) {
+                    (false, false) => "未找到 config.toml 和 auth.json。点击“初始化”创建默认配置，再登录或输入 API key。",
+                    (false, true) => "已找到认证，缺少 config.toml。点击“补齐配置”；现有认证保持不变。",
+                    (true, false) => "已有配置，缺少 auth.json。请在 Codex 登录、导入认证，或在下方输入 API key。",
+                    (true, true) => "配置和认证已存在。选择目标模式后点击“预览变更”，检查无误再应用。",
+                };
+                view.child(
+                    div()
+                        .id("setup-guidance")
+                        .test_support()
+                        .aria_label(guidance)
+                        .child(hint(guidance, !status.config_exists || !status.auth_exists)),
+                )
+            })
+            .when_some(
+                self.status
+                    .as_ref()
+                    .and_then(|status| {
+                        status
+                            .modes
+                            .iter()
+                            .find(|profile| profile.mode == self.target)
+                    })
+                    .filter(|profile| !profile.ready && !profile.issue.is_empty())
+                    .map(|profile| profile.issue.clone()),
+                |view, issue| {
+                    view.child(
+                        div()
+                            .id("target-mode-issue")
+                            .test_support()
+                            .child(hint(format!("目标模式暂不可用：{issue}"), true)),
+                    )
+                },
+            )
             .when(self.status.is_none(), |view| {
                 view.child(hint("正在读取当前 Codex 配置状态。", false))
             })
@@ -473,8 +574,11 @@ impl Switcher {
             .child(target_settings)
             .child(
                 div()
-                    .mt_3()
-                    .child(section_label("模式存档", cx))
+                    .mt_5()
+                    .p_4()
+                    .rounded_lg()
+                    .bg(rgb(0xf7f9fb))
+                    .child(section_label("已保存的模式", cx))
                     .child(mode_cards),
             );
         div()
@@ -501,6 +605,9 @@ impl Switcher {
             .as_ref()
             .is_some_and(|status| status.mode == Some(mode));
         let ready = saved.is_some_and(|profile| profile.ready);
+        let issue = saved
+            .filter(|profile| !profile.issue.is_empty())
+            .map(|profile| profile.issue.clone());
         let summary = saved
             .map(|profile| {
                 format!(
@@ -511,7 +618,7 @@ impl Switcher {
                 )
             })
             .unwrap_or_else(|| "尚未保存".into());
-        div()
+        let row = div()
             .flex()
             .items_center()
             .gap_2()
@@ -553,7 +660,27 @@ impl Switcher {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(summary),
-            )
+            );
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .min_w_0()
+            .child(row)
+            .when_some(issue, |card, issue| {
+                card.child(
+                    div()
+                        .id(if mode == Mode::Api {
+                            "saved-mode-issue-api"
+                        } else {
+                            "saved-mode-issue-subscription"
+                        })
+                        .test_support()
+                        .text_xs()
+                        .text_color(rgb(0x9b6916))
+                        .child(format!("无法切换：{issue}")),
+                )
+            })
     }
 
     fn review_workspace(&self, can_apply: bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -578,13 +705,19 @@ impl Switcher {
             .track_scroll(&self.review_scroll)
             .lock_scroll_axis()
             .px_6()
-            .py_4()
+            .py_5()
+            .child(page_heading(
+                "检查变更",
+                "确认写入内容。返回修改或取消不会切换配置。",
+                cx,
+            ))
+            .child(workflow_steps(true, cx))
             .child(
                 div().flex().items_center().gap_3().mb_3().child(
                     div()
                         .text_lg()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("确认切换"),
+                        .child("即将应用的配置"),
                 ),
             )
             .child(
@@ -680,22 +813,38 @@ impl Switcher {
                         "需要恢复"
                     } else if !status.config_exists {
                         "尚未创建"
-                    } else if status.initialized {
-                        "已就绪"
+                    } else if !status.auth_exists {
+                        "缺少认证"
                     } else {
-                        "未初始化"
+                        "已就绪"
                     },
                 )
             })
             .unwrap_or(("读取中", "读取中"));
         let selected = self.catalog.selected_model;
         let enabled = !self.busy;
+        let query = self.catalog.search.read(cx).value().trim().to_lowercase();
+        let matches_query = |model: &switcher_core::CodexModel| {
+            query.is_empty()
+                || model.slug.to_lowercase().contains(&query)
+                || model.display_name.to_lowercase().contains(&query)
+        };
+        let visible_count = catalog
+            .map(|catalog| {
+                catalog
+                    .models
+                    .iter()
+                    .filter(|model| matches_query(model))
+                    .count()
+            })
+            .unwrap_or(0);
         let model_buttons = catalog
             .map(|catalog| {
                 catalog
                     .models
                     .iter()
                     .enumerate()
+                    .filter(|(_, model)| matches_query(model))
                     .map(|(index, model)| {
                         let is_selected = selected == index;
                         Button::new(format!("catalog-model-{index}"))
@@ -703,7 +852,7 @@ impl Switcher {
                             .selected(is_selected)
                             .label(format!("{} ({})", model.display_name, model.slug))
                             .accessibility_label(format!("模型 {}", model.display_name))
-                            .disabled(!enabled)
+                            .disabled(!enabled || (!self.catalog.priority_valid && !is_selected))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.catalog.select(index, window, cx);
                                 cx.notify();
@@ -712,14 +861,14 @@ impl Switcher {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let editor = if let Some(catalog) = catalog {
+        let editor = if catalog.is_some() {
             let model_list_height = if wide {
                 px(410.)
             } else {
-                px(if catalog.models.len() >= 6 {
+                px(if visible_count >= 6 {
                     170.
                 } else {
-                    catalog.models.len() as f32 * 32.
+                    visible_count.max(1) as f32 * 32.
                 })
             };
             let model_list = div()
@@ -734,7 +883,10 @@ impl Switcher {
                         .overflow_y_scroll()
                         .track_scroll(&self.model_list_scroll)
                         .lock_scroll_axis()
-                        .children(model_buttons),
+                        .children(model_buttons)
+                        .when(visible_count == 0, |list| {
+                            list.child(div().p_2().text_sm().child("没有匹配的模型"))
+                        }),
                 )
                 .child(scrollbar_overlay(
                     "catalog-model-list-scrollbar",
@@ -776,6 +928,17 @@ impl Switcher {
                         .disabled(!enabled),
                     wide,
                 ))
+                .when(!self.catalog.priority_valid, |form| {
+                    form.child(
+                        div()
+                            .id("catalog-priority-error")
+                            .test_support()
+                            .child(hint(
+                                "优先级必须是整数。请修正或放弃当前输入后，再换选或复制模型。",
+                                true,
+                            )),
+                    )
+                })
                 .child(field(
                     "默认推理级别",
                     Input::new(&self.catalog.default_reasoning)
@@ -800,7 +963,7 @@ impl Switcher {
                 div()
                     .flex()
                     .gap_4()
-                    .child(div().w(px(230.)).flex_shrink_0().child(model_list))
+                    .child(div().w(px(200.)).flex_shrink_0().child(model_list))
                     .child(div().flex_1().min_w_0().child(model_form))
             } else {
                 div()
@@ -811,12 +974,142 @@ impl Switcher {
                     .child(model_form)
             }
         } else {
-            div().flex_1().p_8().child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("尚未读取模型目录。"),
-            )
+            div().flex_1().p_6().rounded_lg().bg(rgb(0xf7f9fb))
+                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("先选择一个模型 JSON"))
+                .child(div().mt_2().text_sm().text_color(cx.theme().muted_foreground)
+                    .child("打开现有文件后，即可新增模型、修改参数并保存。打开文件不会改动 Codex 配置。"))
         };
+        let toolbar = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .mb_4()
+            .child(
+                Button::new("catalog-open")
+                    .primary()
+                    .icon(IconName::FolderOpen)
+                    .label("打开 JSON")
+                    .accessibility_label("打开模型 JSON")
+                    .disabled(!enabled || self.catalog.dirty)
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.choose_model_file(window, cx)),
+                    ),
+            )
+            .child(
+                Button::new("catalog-load")
+                    .compact()
+                    .icon(IconName::RefreshCw)
+                    .label(if self.catalog.has_catalog() {
+                        "重新读取已配置目录"
+                    } else {
+                        "读取已配置目录"
+                    })
+                    .disabled(!enabled || self.catalog.dirty)
+                    .on_click(cx.listener(|this, _, window, cx| this.load_catalog(window, cx))),
+            )
+            .child(
+                Button::new("catalog-choose")
+                    .compact()
+                    .icon(IconName::FolderOpen)
+                    .label("选择并关联 JSON")
+                    .accessibility_label("选择并关联模型目录 JSON")
+                    .tooltip("关联到当前模式 config.toml 的 model_catalog_json")
+                    .disabled(!enabled || self.catalog.dirty)
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.choose_model_catalog(window, cx)),
+                    ),
+            )
+            .child(
+                Button::new("catalog-add")
+                    .compact()
+                    .icon(IconName::Plus)
+                    .label("新增模型")
+                    .disabled(!enabled || !self.catalog.can_add())
+                    .on_click(cx.listener(|this, _, window, cx| this.add_model(window, cx))),
+            )
+            .child(
+                Button::new("catalog-clone")
+                    .compact()
+                    .icon(IconName::Copy)
+                    .label("复制模型")
+                    .disabled(!enabled || !self.catalog.can_add())
+                    .on_click(cx.listener(|this, _, window, cx| this.clone_model(window, cx))),
+            )
+            .child(
+                Button::new("catalog-link")
+                    .compact()
+                    .ghost()
+                    .label("用于当前 Codex 模式")
+                    .disabled(
+                        !enabled
+                            || self.catalog.dirty
+                            || catalog.is_none_or(|catalog| catalog.is_linked()),
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.link_model_catalog(window, cx)),
+                    ),
+            );
+        let context = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .mt_5()
+            .p_3()
+            .rounded_md()
+            .bg(cx.theme().muted)
+            .child(
+                div()
+                    .id("catalog-config-directory")
+                    .flex()
+                    .gap_2()
+                    .text_xs()
+                    .child(
+                        div()
+                            .w(px(92.))
+                            .flex_shrink_0()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Codex 配置目录"),
+                    )
+                    .child(div().flex_1().min_w_0().child(directory)),
+            )
+            .child(
+                div()
+                    .id("catalog-current-mode")
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .child(
+                        div()
+                            .w(px(92.))
+                            .flex_shrink_0()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("当前实际模式"),
+                    )
+                    .child(div().child(actual_mode))
+                    .child(pill(
+                        actual_state,
+                        if actual_state == "已就绪" {
+                            rgb(0x167454).into()
+                        } else {
+                            rgb(0x9b6916).into()
+                        },
+                    )),
+            )
+            .child(
+                div().id("catalog-association").child(field(
+                    if catalog.is_some() {
+                        "保存到"
+                    } else {
+                        "已关联文件"
+                    },
+                    Input::new(&self.catalog.configured_path)
+                        .id("catalog-configured-path")
+                        .aria_label("config.toml 关联的模型目录")
+                        .readonly(true),
+                    wide,
+                )),
+            );
         let content = div()
             .id("catalog-workspace")
             .flex_1()
@@ -825,129 +1118,43 @@ impl Switcher {
             .track_scroll(&self.catalog_scroll)
             .lock_scroll_axis()
             .px_6()
-            .py_4()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .mb_4()
-                    .p_3()
-                    .rounded_md()
-                    .bg(cx.theme().muted)
-                    .child(
-                        div()
-                            .id("catalog-config-directory")
-                            .flex()
-                            .gap_2()
-                            .text_xs()
-                            .child(
-                                div()
-                                    .w(px(92.))
-                                    .flex_shrink_0()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Codex 配置目录"),
-                            )
-                            .child(div().flex_1().min_w_0().child(directory)),
-                    )
-                    .child(
-                        div()
-                            .id("catalog-current-mode")
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .text_xs()
-                            .child(
-                                div()
-                                    .w(px(92.))
-                                    .flex_shrink_0()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("当前实际模式"),
-                            )
-                            .child(div().child(actual_mode))
-                            .child(pill(
-                                actual_state,
-                                if actual_state == "已就绪" {
-                                    rgb(0x167454).into()
-                                } else {
-                                    rgb(0x9b6916).into()
-                                },
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .mb_4()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Codex 模型目录"),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("catalog-choose")
-                            .compact()
-                            .icon(IconName::FolderOpen)
-                            .label("选择并关联 JSON")
-                            .accessibility_label("选择并关联模型目录 JSON")
-                            .tooltip("关联到当前模式 config.toml 的 model_catalog_json")
-                            .disabled(!enabled || self.catalog.dirty)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.choose_model_catalog(window, cx)
-                            })),
-                    ),
-            )
-            .child(
-                div().id("catalog-association").mb_4().child(field(
-                    "关联模型文件",
-                    Input::new(&self.catalog.configured_path)
-                        .id("catalog-configured-path")
-                        .aria_label("config.toml 关联的模型目录")
-                        .readonly(true),
-                    wide,
-                )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .mb_4()
-                    .child(
-                        Button::new("catalog-load")
-                            .compact()
-                            .icon(IconName::RefreshCw)
-                            .label(if self.catalog.has_catalog() {
-                                "重新读取已配置目录"
-                            } else {
-                                "读取已配置目录"
-                            })
-                            .disabled(!enabled || self.catalog.dirty)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.load_catalog(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("catalog-clone")
-                            .compact()
-                            .icon(IconName::Copy)
-                            .label("复制模型")
-                            .disabled(!enabled || !self.catalog.has_catalog())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.clone_model(window, cx)),
-                            ),
-                    ),
-            )
+            .py_5()
+            .child(page_heading(
+                "模型目录",
+                "打开文件，配置模型，再保存到同一个 JSON。",
+                cx,
+            ))
+            .child(toolbar)
+            .when_some(catalog, |view, catalog| {
+                view.child(hint(
+                    if catalog.is_linked() {
+                        "此文件已关联到当前模式。保存后请重启 Codex，让模型菜单读取最新内容。"
+                    } else {
+                        "仅编辑此 JSON，不改动 Codex 配置。保存完成后，可单独点击“用于当前 Codex 模式”。"
+                    },
+                    false,
+                ))
+                .child(
+                    div()
+                        .mt_3()
+                        .mb_3()
+                        .child(
+                            Input::new(&self.catalog.search)
+                                .id("catalog-search")
+                                .aria_label("搜索模型")
+                                .cleanable(true)
+                                .disabled(!enabled),
+                        ),
+                )
+            })
+            .child(editor)
+            .child(context)
             .when(self.catalog.dirty, |view| {
                 view.child(hint(
                     "有未保存改动。保存会写入模型目录；放弃会恢复上次读取的内容。",
                     true,
                 ))
-            })
-            .child(editor);
+            });
         div()
             .id("catalog-workspace-container")
             .relative()
@@ -994,6 +1201,7 @@ impl Switcher {
                     Button::new("preview")
                         .icon(IconName::Eye)
                         .label("预览变更")
+                        .primary()
                         .disabled(!can_preview)
                         .on_click(cx.listener(|this, _, window, cx| this.preview(window, cx))),
                 )
@@ -1044,7 +1252,7 @@ impl Switcher {
                         .compact()
                         .primary()
                         .icon(IconName::Check)
-                        .label("保存")
+                        .label("保存到 JSON")
                         .disabled(self.busy || !self.catalog.can_save())
                         .on_click(cx.listener(|this, _, window, cx| this.save_catalog(window, cx))),
                 )
@@ -1059,9 +1267,10 @@ impl Switcher {
                         ),
                 )
                 .child(self.restart_button(can_restart, cx)),
-            MainTab::Update => div(),
+            MainTab::Update | MainTab::Health => div(),
         };
         let mut footer = div()
+            .bg(rgb(0xffffff))
             .px_5()
             .py_3()
             .border_t_1()
@@ -1069,8 +1278,8 @@ impl Switcher {
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap_2()
+                    .flex_col()
+                    .gap_3()
                     .child(
                         div()
                             .flex_1()
@@ -1083,7 +1292,7 @@ impl Switcher {
                             })
                             .child(self.message.clone()),
                     )
-                    .child(actions),
+                    .child(div().flex().justify_end().child(actions)),
             );
         match self.tab {
             MainTab::Switch => {
@@ -1108,7 +1317,7 @@ impl Switcher {
                     footer = footer.child(hint(reason, true));
                 }
             }
-            MainTab::Update => {}
+            MainTab::Update | MainTab::Health => {}
         }
         if self.restart_needed && self.tab != MainTab::Review {
             footer = footer.child(hint("配置已更新。重启 Codex 后将加载最新设置。", false));
@@ -1230,8 +1439,8 @@ fn status_summary(status: &Status, cx: &Context<Switcher>) -> impl IntoElement {
         "需要恢复"
     } else if !status.config_exists {
         "未创建配置"
-    } else if !status.initialized {
-        "未初始化"
+    } else if !status.auth_exists {
+        "缺少认证"
     } else {
         "已就绪"
     };
@@ -1257,6 +1466,18 @@ fn status_summary(status: &Status, cx: &Context<Switcher>) -> impl IntoElement {
         )
         .child(pill(actual_mode, rgb(0x167454).into()))
         .child(pill(state_text, state_color.into()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!(
+                    "{} · {}",
+                    super::format::setting_value(&status.provider),
+                    super::format::setting_value(&status.model),
+                )),
+        )
 }
 
 fn preview_view(preview: &Preview, cx: &Context<Switcher>) -> impl IntoElement {
@@ -1323,6 +1544,70 @@ fn preview_view(preview: &Preview, cx: &Context<Switcher>) -> impl IntoElement {
                 } else {
                     "认证：无变化".into()
                 }),
+        )
+}
+
+fn page_heading(
+    title: &'static str,
+    description: &'static str,
+    cx: &Context<Switcher>,
+) -> impl IntoElement {
+    div()
+        .mb_4()
+        .child(
+            div()
+                .text_xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title),
+        )
+        .child(
+            div()
+                .mt_1()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(description),
+        )
+}
+
+fn workflow_steps(review: bool, cx: &Context<Switcher>) -> impl IntoElement {
+    div()
+        .mb_4()
+        .flex()
+        .items_center()
+        .gap_3()
+        .text_sm()
+        .child(
+            div()
+                .text_color(if review {
+                    cx.theme().muted_foreground
+                } else {
+                    rgb(0x167454).into()
+                })
+                .child("1 选择模式"),
+        )
+        .child(
+            Icon::new(IconName::ArrowRight)
+                .size_3()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            div()
+                .text_color(if review {
+                    rgb(0x167454).into()
+                } else {
+                    cx.theme().muted_foreground
+                })
+                .child("2 检查变更"),
+        )
+        .child(
+            Icon::new(IconName::ArrowRight)
+                .size_3()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            div()
+                .text_color(cx.theme().muted_foreground)
+                .child("3 应用并重启"),
         )
 }
 

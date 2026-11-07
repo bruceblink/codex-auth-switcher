@@ -271,6 +271,55 @@ async fn idle(cx: &mut TestAppContext, window: AnyWindowHandle, app: &Entity<Swi
         .await;
 }
 
+struct SetupExpectation {
+    config_exists: bool,
+    auth_exists: bool,
+    action_label: &'static str,
+    message: &'static str,
+    status: &'static str,
+    guidance: &'static str,
+}
+
+async fn assert_setup_state(cx: &mut TestAppContext, home: PathBuf, expected: SetupExpectation) {
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+    assert_eq!(
+        app.read_with(cx, |view, _| view
+            .status
+            .as_ref()
+            .is_some_and(|status| status.config_exists)),
+        expected.config_exists
+    );
+    assert_eq!(
+        app.read_with(cx, |view, _| view
+            .status
+            .as_ref()
+            .is_some_and(|status| status.auth_exists)),
+        expected.auth_exists
+    );
+    assert!(
+        app.read_with(cx, |view, _| view
+            .status
+            .as_ref()
+            .is_some_and(|status| !status.initialized)),
+        "reading these file combinations should not create a mode archive"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, _| view.message.clone()),
+        expected.message
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let guidance = window.find("setup-guidance");
+        assert!(guidance.visible());
+        assert_eq!(guidance.label(), Some(expected.guidance));
+        assert_eq!(window.find("setup-status").label(), Some(expected.status));
+        let initialize = window.find("initialize");
+        assert_eq!(initialize.label(), Some(expected.action_label));
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect setup guidance and action: {error}"));
+}
+
 async fn update_idle(cx: &mut TestAppContext, window: AnyWindowHandle, app: &Entity<Switcher>) {
     cx.wait_for(window, Duration::from_secs(3), |_, cx| {
         !app.read(cx).updater.status_is_active() && !app.read(cx).updater.preferences_saving
@@ -284,6 +333,28 @@ fn click(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) {
         window.click(id, cx);
     })
     .unwrap_or_else(|error| panic!("cannot click {id}: {error}"));
+}
+
+fn replace_input(
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+    id: &'static str,
+    value: &str,
+) {
+    window.click(id, cx);
+    window.press(
+        if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        },
+        cx,
+    );
+    if value.is_empty() {
+        window.press("backspace", cx);
+    } else {
+        window.input(value, cx);
+    }
 }
 
 fn assert_buttons_fit_without_overlap(
@@ -816,6 +887,7 @@ async fn switches_modes_and_clears_the_api_input(cx: &mut TestAppContext) {
     assert!(app.read_with(cx, |view, cx| view.key.read(cx).value().is_empty()));
     assert_ne!(old_key, app.read_with(cx, |view, _| view.key.entity_id()));
 
+    click(cx, window, "switch-tab");
     click(cx, window, "subscription");
     click(cx, window, "preview");
     idle(cx, window, &app).await;
@@ -835,6 +907,53 @@ async fn switches_modes_and_clears_the_api_input(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+async fn failed_apply_preserves_the_api_key_draft(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let (window, app) = open(cx, home.clone(), 1200., 1100.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+
+    let api_key = "synthetic-stale-preview-key";
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "api-key-input", api_key);
+    })
+    .unwrap_or_else(|error| panic!("cannot edit test API key: {error}"));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view.key.read(cx).value().to_string()),
+        api_key
+    );
+    click(cx, window, "preview");
+    idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| view.prepared.is_some()));
+
+    let config_path = home.join("config.toml");
+    let mut external_config = fs::read_to_string(&config_path)
+        .unwrap_or_else(|error| panic!("cannot read config: {error}"));
+    external_config.push_str("\n# external edit after preview\n");
+    fs::write(&config_path, &external_config)
+        .unwrap_or_else(|error| panic!("cannot simulate external config edit: {error}"));
+
+    click(cx, window, "apply");
+    idle(cx, window, &app).await;
+
+    assert_eq!(
+        app.read_with(cx, |view, cx| view.key.read(cx).value().to_string()),
+        api_key,
+        "a failed apply must preserve the API key draft"
+    );
+    assert!(app.read_with(cx, |view, _| view.prepared.is_none()));
+    assert!(app.read_with(cx, |view, _| view.message.contains("预览后文件已发生变化")));
+    assert_eq!(
+        fs::read_to_string(&config_path)
+            .unwrap_or_else(|error| panic!("cannot read config after failed apply: {error}")),
+        external_config
+    );
+}
+
+#[gpui_kit::test]
 async fn first_run_creates_defaults_without_fake_authentication(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
     let home = temp.path().join("codex-home");
@@ -845,7 +964,8 @@ async fn first_run_creates_defaults_without_fake_authentication(cx: &mut TestApp
         window.render_frame(cx);
         let initialize = window.find("initialize");
         assert!(initialize.visible());
-        assert_eq!(initialize.label(), Some("创建默认配置"));
+        assert_eq!(initialize.label(), Some("初始化"));
+        assert!(window.find("setup-guidance").visible());
     })
     .unwrap_or_else(|error| panic!("cannot inspect first-run action: {error}"));
     click(cx, window, "initialize");
@@ -858,6 +978,327 @@ async fn first_run_creates_defaults_without_fake_authentication(cx: &mut TestApp
     assert_eq!(
         app.read_with(cx, |view, cx| view.endpoint.read(cx).value().to_string()),
         "https://api.openai.com/v1"
+    );
+}
+
+#[gpui_kit::test]
+async fn setup_guidance_matches_config_and_auth_file_presence(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+
+    let neither = temp.path().join("neither");
+    assert_setup_state(
+        cx,
+        neither.clone(),
+        SetupExpectation {
+            config_exists: false,
+            auth_exists: false,
+            action_label: "初始化",
+            message: "未找到 config.toml 和 auth.json。请先初始化配置。",
+            status: "首次使用",
+            guidance:
+                "未找到 config.toml 和 auth.json。点击“初始化”创建默认配置，再登录或输入 API key。",
+        },
+    )
+    .await;
+    assert!(!neither.join("config.toml").exists());
+    assert!(!neither.join("auth.json").exists());
+    assert_setup_state(
+        cx,
+        {
+            let home = temp.path().join("config-only");
+            crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+            fs::remove_file(home.join("auth.json"))
+                .unwrap_or_else(|error| panic!("cannot remove synthetic auth for test: {error}"));
+            home
+        },
+        SetupExpectation {
+            config_exists: true,
+            auth_exists: false,
+            action_label: "保存当前模式",
+            message: "已读取配置，缺少 auth.json。请登录 Codex、导入认证或输入 API key。",
+            status: "待补齐",
+            guidance: "已有配置，缺少 auth.json。请在 Codex 登录、导入认证，或在下方输入 API key。",
+        },
+    )
+    .await;
+    assert_setup_state(
+        cx,
+        {
+            let home = temp.path().join("auth-only");
+            fs::create_dir_all(&home)
+                .unwrap_or_else(|error| panic!("cannot create auth-only test home: {error}"));
+            fs::write(
+                home.join("auth.json"),
+                br#"{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","id_token":"synthetic-id","account_id":"synthetic-account"}}"#,
+            )
+                .unwrap_or_else(|error| panic!("cannot write config-only test config: {error}"));
+            home
+        },
+        SetupExpectation {
+            config_exists: false,
+            auth_exists: true,
+            action_label: "补齐配置",
+            message: "已找到 auth.json，缺少 config.toml。请补齐配置。",
+            status: "待补齐",
+            guidance: "已找到认证，缺少 config.toml。点击“补齐配置”；现有认证保持不变。",
+        },
+    )
+    .await;
+    assert_setup_state(
+        cx,
+        {
+            let home = temp.path().join("both");
+            crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+            home
+        },
+        SetupExpectation {
+            config_exists: true,
+            auth_exists: true,
+            action_label: "保存当前模式",
+            message: "已读取配置和认证。请选择目标模式，再预览变更。",
+            status: "已就绪",
+            guidance: "配置和认证已存在。选择目标模式后点击“预览变更”，检查无误再应用。",
+        },
+    )
+    .await;
+}
+
+#[gpui_kit::test]
+async fn configuration_check_is_read_only_and_confirmed_cleanup_preserves_other_data(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let config_path = home.join("config.toml");
+    let auth_path = home.join("auth.json");
+    let config_before = fs::read_to_string(&config_path)
+        .unwrap_or_else(|error| panic!("cannot read synthetic test config: {error}"));
+    let configured = config_before.replace(
+        "[features]\nmulti_agent = true",
+        "personality = \"friendly\"\nunknown_option = \"preserve-me\"\n\
+         [features]\nmulti_agent = true\npersonality = true\nunified_exec = false",
+    );
+    fs::write(&config_path, configured)
+        .unwrap_or_else(|error| panic!("cannot write synthetic test config: {error}"));
+    let config_before_check = fs::read(&config_path)
+        .unwrap_or_else(|error| panic!("cannot snapshot config before check: {error}"));
+    let auth_before = fs::read(&auth_path)
+        .unwrap_or_else(|error| panic!("cannot snapshot synthetic auth: {error}"));
+
+    let (window, app) = open(cx, home.clone(), 1040., 740.);
+    idle(cx, window, &app).await;
+    assert!(!home.join("auth-switcher-v2").join("modes.enc").exists());
+    click(cx, window, "config-tab");
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("config-check-empty").visible());
+        assert_ne!(window.find("config-check").disabled(), Some(true));
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect configuration check page: {error}"));
+    click(cx, window, "config-check");
+    idle(cx, window, &app).await;
+
+    assert_eq!(
+        fs::read(&config_path)
+            .unwrap_or_else(|error| panic!("cannot read config after check: {error}")),
+        config_before_check,
+        "checking config.toml must not modify it"
+    );
+    assert_eq!(
+        fs::read(&auth_path)
+            .unwrap_or_else(|error| panic!("cannot read auth after check: {error}")),
+        auth_before,
+        "checking config.toml must not modify auth.json"
+    );
+    assert!(
+        app.read_with(cx, |view, _| view.health_report.as_ref().is_some_and(
+            |report| {
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.key == "personality" && issue.cleanup)
+                    && report
+                        .issues
+                        .iter()
+                        .any(|issue| issue.key == "features.unified_exec" && issue.cleanup)
+            }
+        ))
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("config-check-report").visible());
+        assert!(window.find("config-issue-personality").visible());
+        assert!(window.find("config-issue-features.unified_exec").visible());
+        assert_ne!(window.find("config-clean").disabled(), Some(true));
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect configuration findings: {error}"));
+
+    click(cx, window, "config-clean");
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("config-clean-confirm").is_some()
+            && window.try_find("config-clean-cancel").is_some()
+    })
+    .await;
+    click(cx, window, "config-clean-cancel");
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("config-clean-confirm").is_none()
+    })
+    .await;
+    assert_eq!(
+        fs::read(&config_path)
+            .unwrap_or_else(|error| panic!("cannot read config after cancel: {error}")),
+        config_before_check,
+        "canceling cleanup must leave config.toml unchanged"
+    );
+    assert_eq!(
+        fs::read(&auth_path)
+            .unwrap_or_else(|error| panic!("cannot read auth after cancel: {error}")),
+        auth_before
+    );
+    assert!(app.read_with(cx, |view, _| view.health_report.is_some()));
+
+    click(cx, window, "config-clean");
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("config-clean-confirm").is_some()
+    })
+    .await;
+    click(cx, window, "config-clean-confirm");
+    idle(cx, window, &app).await;
+    assert!(
+        app.read_with(cx, |view, _| view
+            .health_report
+            .as_ref()
+            .is_some_and(|report| !report.can_cleanup())),
+        "successful cleanup should refresh the report and remove cleanable findings"
+    );
+
+    let cleaned = fs::read_to_string(&config_path)
+        .unwrap_or_else(|error| panic!("cannot read cleaned test config: {error}"));
+    assert!(!cleaned.contains("personality = \"friendly\""));
+    assert!(!cleaned.contains("personality = true"));
+    assert!(!cleaned.contains("unified_exec = false"));
+    assert!(cleaned.contains("model_provider = \"openai\""));
+    assert!(cleaned.contains("multi_agent = true"));
+    assert!(cleaned.contains("unknown_option = \"preserve-me\""));
+    assert!(cleaned.contains("[projects.\"F:/example\"]"));
+    assert_eq!(
+        fs::read(&auth_path)
+            .unwrap_or_else(|error| panic!("cannot read auth after cleanup: {error}")),
+        auth_before
+    );
+    assert!(!home.join("auth-switcher-v2").join("modes.enc").exists());
+
+    let backups = fs::read_dir(&home)
+        .unwrap_or_else(|error| panic!("cannot list config backup directory: {error}"))
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("config.toml.bak-cleanup-")
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        backups.len(),
+        1,
+        "confirmed cleanup should create one backup"
+    );
+    let backup = fs::read_to_string(&backups[0])
+        .unwrap_or_else(|error| panic!("cannot read cleanup patch backup: {error}"));
+    assert!(backup.contains("personality = \"friendly\""));
+    assert!(backup.contains("personality = true"));
+    assert!(backup.contains("unified_exec = false"));
+    assert!(!backup.contains("multi_agent"));
+    assert!(!backup.contains("unknown_option"));
+    assert!(!backup.contains("projects"));
+    assert!(!backup.contains("synthetic-access"));
+
+    click(cx, window, "config-check");
+    idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| {
+        view.health_report
+            .as_ref()
+            .is_some_and(|report| !report.can_cleanup())
+    }));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("config-clean").disabled(), Some(true));
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect rechecked configuration: {error}"));
+}
+
+#[gpui_kit::test]
+async fn configuration_cleanup_rejects_stale_check_without_overwriting_external_changes(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let config_path = home.join("config.toml");
+    let original = fs::read_to_string(&config_path)
+        .unwrap_or_else(|error| panic!("cannot read synthetic test config: {error}"));
+    let cleanup_target = original.replace(
+        "[features]\nmulti_agent = true",
+        "personality = \"friendly\"\n[features]\nmulti_agent = true",
+    );
+    fs::write(&config_path, cleanup_target)
+        .unwrap_or_else(|error| panic!("cannot write synthetic cleanup target: {error}"));
+    let external_change = format!(
+        "{}\nexternal_change_marker = \"preserve-external-edit\"\n",
+        fs::read_to_string(&config_path)
+            .unwrap_or_else(|error| panic!("cannot read cleanup target: {error}"))
+    );
+    let auth_before = fs::read(home.join("auth.json"))
+        .unwrap_or_else(|error| panic!("cannot snapshot synthetic auth: {error}"));
+
+    let (window, app) = open(cx, home.clone(), 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "config-tab");
+    click(cx, window, "config-check");
+    idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| {
+        view.health_report
+            .as_ref()
+            .is_some_and(|report| report.can_cleanup())
+    }));
+
+    fs::write(&config_path, external_change)
+        .unwrap_or_else(|error| panic!("cannot simulate an external config edit: {error}"));
+    let external_bytes = fs::read(&config_path)
+        .unwrap_or_else(|error| panic!("cannot snapshot external config edit: {error}"));
+    click(cx, window, "config-clean");
+    cx.wait_for(window, Duration::from_secs(1), |window, _| {
+        window.try_find("config-clean-confirm").is_some()
+    })
+    .await;
+    click(cx, window, "config-clean-confirm");
+    idle(cx, window, &app).await;
+
+    assert!(app.read_with(cx, |view, _| view.error));
+    assert_eq!(
+        fs::read(&config_path)
+            .unwrap_or_else(|error| panic!("cannot read config after stale cleanup: {error}")),
+        external_bytes
+    );
+    assert!(String::from_utf8_lossy(&external_bytes).contains("preserve-external-edit"));
+    assert_eq!(
+        fs::read(home.join("auth.json"))
+            .unwrap_or_else(|error| panic!("cannot read auth after stale cleanup: {error}")),
+        auth_before
+    );
+    assert!(
+        !fs::read_dir(&home)
+            .unwrap_or_else(|error| panic!("cannot list home after stale cleanup: {error}"))
+            .filter_map(std::result::Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("config.toml.bak-cleanup-")
+            }),
+        "stale cleanup must fail before creating a patch backup"
     );
 }
 
@@ -1228,6 +1669,28 @@ async fn api_key_can_be_cleared_after_target_changes_to_subscription(cx: &mut Te
         window.render_frame(cx);
         assert!(window.find("clear-api-key").visible());
         assert_ne!(window.find("clear-api-key").disabled(), Some(true));
+
+        let scroll = app.read(cx).switch_scroll.clone();
+        let scroll_bounds = scroll.bounds();
+        let clear_bounds = window.find("clear-api-key").bounds();
+        let scroll_offset = scroll.offset();
+        let scroll_y = (clear_bounds.bottom() - scroll_bounds.bottom()).max(px(0.));
+        if scroll_y > px(0.) {
+            scroll.set_offset(point(scroll_offset.x, scroll_offset.y - scroll_y));
+        }
+        window.render_frame(cx);
+
+        let clear_bounds = window.find("clear-api-key").bounds();
+        let clear_center = clear_bounds.center();
+        let scroll_bounds = scroll.bounds();
+        assert!(
+            clear_center.x >= scroll_bounds.left()
+                && clear_center.x < scroll_bounds.right()
+                && clear_center.y >= scroll_bounds.top()
+                && clear_center.y < scroll_bounds.bottom(),
+            "clear API key button center must be inside the switch page viewport: button={clear_bounds:?}, viewport={scroll_bounds:?}"
+        );
+        assert!(window.find("clear-api-key").visible());
         window.click("clear-api-key", cx);
     })
     .unwrap_or_else(|error| panic!("cannot clear API key from subscription target: {error}"));
@@ -1423,6 +1886,596 @@ async fn catalog_save_and_discard_preserve_selected_model_and_saved_values(
     );
 }
 
+#[gpui_kit::test]
+async fn opening_an_independent_catalog_supports_search_add_and_save_without_linking(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let config_before = fs::read(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot read initial test config: {error}"));
+    let auth_before = fs::read(home.join("auth.json"))
+        .unwrap_or_else(|error| panic!("cannot read initial test authentication: {error}"));
+    let catalog_path = temp.path().join("selected-models.json");
+    let original_catalog = br#"{"catalog_version":3,"catalog_metadata":{"source":"synthetic"},"models":[{"slug":"alpha-id","display_name":"Alpha Model","visibility":"hidden","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"High detail","source":"high-meta"},{"effort":"low","description":"Low detail","source":"low-meta"}],"priority":3,"model_metadata":{"keep":"alpha"}},{"slug":"beta-id","display_name":"Beta Model","visibility":"list","default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low","description":"Low detail","source":"low-meta"}],"priority":4,"model_metadata":{"keep":"beta"}},{"slug":"new-model-1","display_name":"Existing New Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"High detail"}],"priority":0}]}"#.to_vec();
+    fs::write(&catalog_path, original_catalog.clone())
+        .unwrap_or_else(|error| panic!("cannot write selected model catalog: {error}"));
+
+    let selected_file = Arc::new(Mutex::new(Some(catalog_path.clone())));
+    let picker_calls = Arc::new(AtomicUsize::new(0));
+    let selected_file_for_picker = selected_file.clone();
+    let picker_calls_for_picker = picker_calls.clone();
+    let pick_model_catalog = Arc::new(move || {
+        picker_calls_for_picker.fetch_add(1, Ordering::SeqCst);
+        let selected = selected_file_for_picker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        Box::pin(async move { selected }) as DialogFuture
+    });
+    let (window, app) = open_with_dialogs(
+        cx,
+        home.clone(),
+        1040.,
+        740.,
+        test_dialogs(pick_model_catalog),
+    );
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-open");
+    idle(cx, window, &app).await;
+    assert_eq!(picker_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 3);
+    assert!(app.read_with(cx, |view, _| {
+        view.catalog
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| !catalog.is_linked())
+    }));
+    assert_eq!(
+        fs::read(home.join("config.toml"))
+            .unwrap_or_else(|error| panic!("cannot read config after opening catalog: {error}")),
+        config_before
+    );
+    assert_eq!(
+        fs::read(home.join("auth.json"))
+            .unwrap_or_else(|error| panic!("cannot read auth after opening catalog: {error}")),
+        auth_before
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "catalog-search", "ALPHA");
+        window.render_frame(cx);
+        assert!(window.try_find("catalog-model-0").is_some());
+        assert!(window.try_find("catalog-model-1").is_none());
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect display-name search results: {error}"));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .search
+            .read(cx)
+            .value()
+            .to_string()),
+        "ALPHA"
+    );
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "catalog-search", "BETA-ID");
+        window.render_frame(cx);
+        assert!(window.try_find("catalog-model-0").is_none());
+        assert!(window.try_find("catalog-model-1").is_some());
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect model-ID search results: {error}"));
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "catalog-search", "");
+    })
+    .unwrap_or_else(|error| panic!("cannot clear model catalog search: {error}"));
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+
+    click(cx, window, "catalog-add");
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 4);
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.selected_model), 3);
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .model_id
+            .read(cx)
+            .value()
+            .to_string()),
+        "new-model-2"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .display_name
+            .read(cx)
+            .value()
+            .to_string()),
+        "新模型"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .visibility
+            .read(cx)
+            .value()
+            .to_string()),
+        "hidden"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .priority
+            .read(cx)
+            .value()
+            .to_string()),
+        "5"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .supported_reasoning
+            .read(cx)
+            .value()
+            .to_string()),
+        "high, low"
+    );
+    let added_model = app.read_with(cx, |view, _| {
+        serde_json::to_value(
+            view.catalog
+                .catalog
+                .as_ref()
+                .unwrap_or_else(|| panic!("test catalog should remain loaded"))
+                .models[3]
+                .clone(),
+        )
+        .unwrap_or_else(|error| panic!("cannot serialize added test model: {error}"))
+    });
+    assert_eq!(added_model["model_metadata"]["keep"], "alpha");
+    assert_eq!(
+        added_model["supported_reasoning_levels"][0]["source"],
+        "high-meta"
+    );
+    assert_eq!(
+        added_model["supported_reasoning_levels"][1]["description"],
+        "Low detail"
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-id", "custom-model-v2");
+        replace_input(window, cx, "model-name", "Custom Added Model");
+    })
+    .unwrap_or_else(|error| panic!("cannot edit added model fields: {error}"));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .model_id
+            .read(cx)
+            .value()
+            .to_string()),
+        "custom-model-v2"
+    );
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .display_name
+            .read(cx)
+            .value()
+            .to_string()),
+        "Custom Added Model"
+    );
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("catalog-link").disabled(), Some(true));
+        window.click("catalog-link", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot verify link is disabled for dirty draft: {error}"));
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    assert!(app.read_with(cx, |view, _| {
+        view.catalog
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| !catalog.is_linked())
+    }));
+    assert_eq!(
+        fs::read(home.join("config.toml"))
+            .unwrap_or_else(|error| panic!("cannot read config after blocked link: {error}")),
+        config_before
+    );
+    click(cx, window, "catalog-save");
+    idle(cx, window, &app).await;
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert!(app.read_with(cx, |view, _| {
+        view.catalog
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| !catalog.is_linked())
+    }));
+
+    let saved: serde_json::Value = serde_json::from_slice(
+        &fs::read(&catalog_path)
+            .unwrap_or_else(|error| panic!("cannot read saved independent catalog: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("cannot parse saved independent catalog: {error}"));
+    assert_eq!(saved["catalog_version"], 3);
+    assert_eq!(saved["catalog_metadata"]["source"], "synthetic");
+    assert_eq!(saved["models"].as_array().map(Vec::len), Some(4));
+    assert_eq!(saved["models"][3]["slug"], "custom-model-v2");
+    assert_eq!(saved["models"][3]["display_name"], "Custom Added Model");
+    assert_eq!(saved["models"][3]["model_metadata"]["keep"], "alpha");
+    assert_eq!(
+        saved["models"][3]["supported_reasoning_levels"][0]["source"],
+        "high-meta"
+    );
+    let backups = fs::read_dir(
+        catalog_path
+            .parent()
+            .unwrap_or_else(|| panic!("selected catalog should have a parent directory")),
+    )
+    .unwrap_or_else(|error| panic!("cannot list catalog backup directory: {error}"))
+    .filter_map(std::result::Result::ok)
+    .filter(|entry| {
+        entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("selected-models.json.bak-")
+    })
+    .map(|entry| entry.path())
+    .collect::<Vec<_>>();
+    assert_eq!(backups.len(), 1, "save should create one catalog backup");
+    assert_eq!(
+        fs::read(&backups[0]).unwrap_or_else(|error| panic!("cannot read catalog backup: {error}")),
+        original_catalog
+    );
+    assert_eq!(
+        fs::read(home.join("config.toml"))
+            .unwrap_or_else(|error| panic!("cannot read config after save: {error}")),
+        config_before
+    );
+    assert_eq!(
+        fs::read(home.join("auth.json"))
+            .unwrap_or_else(|error| panic!("cannot read auth after save: {error}")),
+        auth_before
+    );
+
+    click(cx, window, "catalog-link");
+    idle(cx, window, &app).await;
+    assert!(app.read_with(cx, |view, _| {
+        view.catalog
+            .catalog
+            .as_ref()
+            .is_some_and(switcher_core::ModelCatalog::is_linked)
+    }));
+    let linked_config_bytes = fs::read(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot read config after explicit link: {error}"));
+    assert_ne!(linked_config_bytes, config_before);
+    let linked_config = fs::read_to_string(home.join("config.toml"))
+        .unwrap_or_else(|error| panic!("cannot decode linked config: {error}"));
+    assert!(linked_config.contains("model_catalog_json"));
+    assert!(linked_config.contains("selected-models.json"));
+    assert_eq!(
+        fs::read(home.join("auth.json"))
+            .unwrap_or_else(|error| panic!("cannot read auth after explicit link: {error}")),
+        auth_before
+    );
+}
+
+#[gpui_kit::test]
+async fn invalid_catalog_priority_keeps_draft_until_repaired_or_discarded(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("models-codex.json");
+    fs::write(
+        &catalog_path,
+        r#"{"catalog_version":3,"models":[{"slug":"first-model","display_name":"First Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Synthetic high"}],"priority":1},{"slug":"second-model","display_name":"Second Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Synthetic high"}],"priority":2}]}"#,
+    )
+    .unwrap_or_else(|error| panic!("cannot write test catalog: {error}"));
+    configure_catalog_path(&home.join("config.toml"), &catalog_path);
+    let catalog_before = fs::read(&catalog_path)
+        .unwrap_or_else(|error| panic!("cannot read initial test catalog: {error}"));
+
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-priority", "");
+    })
+    .unwrap_or_else(|error| panic!("cannot clear model priority: {error}"));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .priority
+            .read(cx)
+            .value()
+            .to_string()),
+        "",
+        "the actual input value should be empty after Ctrl+A and Backspace"
+    );
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    assert!(!app.read_with(cx, |view, _| view.catalog.priority_valid));
+    assert!(!app.read_with(cx, |view, _| view.catalog.can_save()));
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("catalog-priority-error").is_some());
+        assert_ne!(
+            window.find("model-priority").disabled(),
+            Some(true),
+            "the invalid priority field must remain editable"
+        );
+        for id in ["catalog-model-1", "catalog-clone", "catalog-save"] {
+            assert_eq!(
+                window.find(id).disabled(),
+                Some(true),
+                "{id} should be disabled"
+            );
+            window.click(id, cx);
+        }
+        assert_ne!(window.find("catalog-discard").disabled(), Some(true));
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect invalid-priority controls: {error}"));
+    cx.update_window(window, |_, window, cx| {
+        app.update(cx, |this, cx| {
+            this.catalog.select(1, window, cx);
+            this.catalog.clone_selected(window, cx);
+            this.clone_model(window, cx);
+            this.save_catalog(window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot call invalid-priority guards: {error}"));
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.selected_model), 0);
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .priority
+            .read(cx)
+            .value()
+            .to_string()),
+        ""
+    );
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    assert!(!app.read_with(cx, |view, _| view.catalog.priority_valid));
+    assert_eq!(
+        fs::read(&catalog_path)
+            .unwrap_or_else(|error| panic!("cannot read catalog after guarded actions: {error}")),
+        catalog_before
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-priority", "-");
+    })
+    .unwrap_or_else(|error| panic!("cannot enter a negative-sign priority draft: {error}"));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .priority
+            .read(cx)
+            .value()
+            .to_string()),
+        "-"
+    );
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    assert!(!app.read_with(cx, |view, _| view.catalog.priority_valid));
+    assert!(!app.read_with(cx, |view, _| view.catalog.can_save()));
+
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-priority", "1");
+    })
+    .unwrap_or_else(|error| panic!("cannot restore original model priority: {error}"));
+    assert!(app.read_with(cx, |view, _| view.catalog.priority_valid));
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert!(!app.read_with(cx, |view, _| view.catalog.can_save()));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("catalog-priority-error").is_none());
+        assert_ne!(window.find("catalog-model-1").disabled(), Some(true));
+        assert_ne!(window.find("catalog-clone").disabled(), Some(true));
+        assert_eq!(window.find("catalog-discard").disabled(), Some(true));
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect repaired-priority controls: {error}"));
+    click(cx, window, "catalog-model-1");
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.selected_model), 1);
+    click(cx, window, "catalog-model-0");
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.selected_model), 0);
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-priority", "-");
+    })
+    .unwrap_or_else(|error| panic!("cannot create invalid priority before discard: {error}"));
+    click(cx, window, "catalog-discard");
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .priority
+            .read(cx)
+            .value()
+            .to_string()),
+        "1"
+    );
+    assert!(app.read_with(cx, |view, _| view.catalog.priority_valid));
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert_eq!(
+        fs::read(&catalog_path)
+            .unwrap_or_else(|error| panic!("cannot read catalog after discard: {error}")),
+        catalog_before
+    );
+}
+
+#[gpui_kit::test]
+async fn catalog_edits_survive_model_selection_and_returning_to_baseline_clears_dirty(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("models-codex.json");
+    fs::write(
+        &catalog_path,
+        r#"{"catalog_version":3,"models":[{"slug":"first-model","display_name":"First Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Synthetic high"}],"priority":1},{"slug":"second-model","display_name":"Second Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Synthetic high"}],"priority":2}]}"#,
+    )
+    .unwrap_or_else(|error| panic!("cannot write test catalog: {error}"));
+    configure_catalog_path(&home.join("config.toml"), &catalog_path);
+
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+
+    cx.update_window(window, |_, window, cx| {
+        window.click("model-name", cx);
+        window.press("end", cx);
+        window.input("-draft", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot edit first model name: {error}"));
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    click(cx, window, "catalog-model-1");
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.selected_model), 1);
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .display_name
+            .read(cx)
+            .value()
+            .to_string()),
+        "Second Model"
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.click("model-name", cx);
+        window.press("end", cx);
+        window.input("-draft", cx);
+    })
+    .unwrap_or_else(|error| panic!("cannot edit second model name: {error}"));
+    click(cx, window, "catalog-model-0");
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .display_name
+            .read(cx)
+            .value()
+            .to_string()),
+        "First Model-draft"
+    );
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-name", "First Model");
+    })
+    .unwrap_or_else(|error| panic!("cannot restore first model name: {error}"));
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    click(cx, window, "catalog-model-1");
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .display_name
+            .read(cx)
+            .value()
+            .to_string()),
+        "Second Model-draft"
+    );
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-name", "Second Model");
+    })
+    .unwrap_or_else(|error| panic!("cannot restore second model name: {error}"));
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert!(app.read_with(cx, |view, _| view.catalog.priority_valid));
+    assert!(!app.read_with(cx, |view, _| view.catalog.can_save()));
+}
+
+#[gpui_kit::test]
+async fn restoring_supported_reasoning_levels_preserves_descriptions_and_metadata(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("models-codex.json");
+    fs::write(
+        &catalog_path,
+        r#"{"catalog_version":3,"models":[{"slug":"reasoning-model","display_name":"Reasoning Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"High detail","source":"test-high"},{"effort":"low","description":"Low detail","source":"test-low"}],"priority":1,"model_metadata":"keep-me"}]}"#,
+    )
+    .unwrap_or_else(|error| panic!("cannot write test catalog: {error}"));
+    configure_catalog_path(&home.join("config.toml"), &catalog_path);
+
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-supported-reasoning", "high");
+    })
+    .unwrap_or_else(|error| panic!("cannot remove a supported reasoning level: {error}"));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .supported_reasoning
+            .read(cx)
+            .value()
+            .to_string()),
+        "high"
+    );
+    assert!(app.read_with(cx, |view, _| view.catalog.dirty));
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-supported-reasoning", "high, low");
+    })
+    .unwrap_or_else(|error| panic!("cannot restore supported reasoning levels: {error}"));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .supported_reasoning
+            .read(cx)
+            .value()
+            .to_string()),
+        "high, low"
+    );
+
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    let serialized = app.read_with(cx, |view, _| {
+        serde_json::to_value(
+            view.catalog
+                .catalog
+                .as_ref()
+                .unwrap_or_else(|| panic!("test catalog should remain loaded"))
+                .models[0]
+                .clone(),
+        )
+        .unwrap_or_else(|error| panic!("cannot serialize restored test model: {error}"))
+    });
+    assert_eq!(serialized["model_metadata"], "keep-me");
+    assert_eq!(
+        serialized["supported_reasoning_levels"][0]["description"],
+        "High detail"
+    );
+    assert_eq!(
+        serialized["supported_reasoning_levels"][0]["source"],
+        "test-high"
+    );
+    assert_eq!(
+        serialized["supported_reasoning_levels"][1]["description"],
+        "Low detail"
+    );
+    assert_eq!(
+        serialized["supported_reasoning_levels"][1]["source"],
+        "test-low"
+    );
+}
+
 #[cfg(windows)]
 #[gpui_kit::test]
 async fn restart_confirmation_traps_focus_and_escape_cancels(cx: &mut TestAppContext) {
@@ -1524,6 +2577,33 @@ async fn saving_catalog_refreshes_mode_readiness(cx: &mut TestAppContext) {
             })
         }))
     );
+
+    click(cx, window, "switch-tab");
+    click(cx, window, "subscription");
+    assert_eq!(
+        app.read_with(cx, |view, _| view.target),
+        Mode::Subscription,
+        "the target mode must be Subscription for this regression check"
+    );
+    assert!(app.read_with(cx, |view, _| {
+        view.status.as_ref().is_some_and(|status| {
+            status.modes.iter().any(|mode| {
+                mode.mode == Mode::Subscription && !mode.ready && !mode.issue.is_empty()
+            })
+        })
+    }));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("target-mode-issue").is_some(),
+            "the unavailable target mode must show its issue"
+        );
+        assert!(
+            window.try_find("saved-mode-issue-subscription").is_some(),
+            "the saved Subscription card must show the same issue"
+        );
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect mode availability issues: {error}"));
 }
 
 #[gpui_kit::test]
@@ -1808,4 +2888,205 @@ async fn successful_mode_switch_clears_the_previous_model_catalog(cx: &mut TestA
             .value()
             .contains("demo-api-model")
     }));
+}
+
+#[gpui_kit::test]
+async fn cloned_model_restores_removed_reasoning_metadata(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("models-codex.json");
+    fs::write(
+        &catalog_path,
+        r#"{"catalog_version":3,"models":[{"slug":"reasoning-model","display_name":"Reasoning Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"High detail","source":"test-high"},{"effort":"low","description":"Low detail","source":"test-low"}],"priority":1,"model_metadata":"keep-me"}]}"#,
+    )
+    .unwrap_or_else(|error| panic!("cannot write test catalog: {error}"));
+    configure_catalog_path(&home.join("config.toml"), &catalog_path);
+
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+
+    click(cx, window, "catalog-clone");
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 2);
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .model_id
+            .read(cx)
+            .value()
+            .to_string()),
+        "new-model-1"
+    );
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-supported-reasoning", "high");
+    })
+    .unwrap_or_else(|error| panic!("cannot remove reasoning level from clone: {error}"));
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-supported-reasoning", "high, low");
+    })
+    .unwrap_or_else(|error| panic!("cannot restore reasoning level on clone: {error}"));
+
+    let cloned_model = app.read_with(cx, |view, _| {
+        serde_json::to_value(
+            view.catalog
+                .catalog
+                .as_ref()
+                .unwrap_or_else(|| panic!("test catalog should remain loaded"))
+                .models[1]
+                .clone(),
+        )
+        .unwrap_or_else(|error| panic!("cannot serialize cloned test model: {error}"))
+    });
+    assert_eq!(cloned_model["model_metadata"], "keep-me");
+    assert_eq!(
+        cloned_model["supported_reasoning_levels"][0]["description"],
+        "High detail"
+    );
+    assert_eq!(
+        cloned_model["supported_reasoning_levels"][0]["source"],
+        "test-high"
+    );
+    assert_eq!(
+        cloned_model["supported_reasoning_levels"][1]["description"],
+        "Low detail"
+    );
+    assert_eq!(
+        cloned_model["supported_reasoning_levels"][1]["source"],
+        "test-low"
+    );
+}
+
+#[gpui_kit::test]
+async fn catalog_add_and_clone_stop_at_the_core_model_limit(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("models-codex.json");
+    let models = (0..512)
+        .map(|index| {
+            serde_json::json!({
+                "slug": format!("model-{index}"),
+                "display_name": format!("Model {index}"),
+                "visibility": "list",
+                "default_reasoning_level": "high",
+                "supported_reasoning_levels": [{"effort": "high"}],
+                "priority": index,
+            })
+        })
+        .collect::<Vec<_>>();
+    let contents = serde_json::to_vec(&serde_json::json!({
+        "catalog_version": 3,
+        "models": models,
+    }))
+    .unwrap_or_else(|error| panic!("cannot serialize test model catalog: {error}"));
+    fs::write(&catalog_path, contents)
+        .unwrap_or_else(|error| panic!("cannot write maximum-size test catalog: {error}"));
+    configure_catalog_path(&home.join("config.toml"), &catalog_path);
+
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 512);
+    assert!(!app.read_with(cx, |view, _| view.catalog.can_add()));
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        for id in ["catalog-add", "catalog-clone"] {
+            assert_eq!(window.find(id).disabled(), Some(true));
+            window.click(id, cx);
+        }
+        app.update(cx, |this, cx| {
+            assert!(!this.catalog.clone_selected(window, cx));
+            this.clone_model(window, cx);
+            this.add_model(window, cx);
+        });
+    })
+    .unwrap_or_else(|error| panic!("cannot inspect model limit behavior: {error}"));
+    assert_eq!(app.read_with(cx, |view, _| view.catalog.model_count()), 512);
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert!(app.read_with(cx, |view, _| view.error));
+    assert!(app.read_with(cx, |view, _| view.message.contains("512")));
+}
+
+#[gpui_kit::test]
+async fn catalog_search_survives_saving_and_discarding_edits(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("temp directory: {error}"));
+    let home = temp.path().join("codex-home");
+    crate::demo::create(&home).unwrap_or_else(|error| panic!("test data: {error}"));
+    let catalog_path = home.join("models-codex.json");
+    fs::write(
+        &catalog_path,
+        r#"{"catalog_version":3,"models":[{"slug":"first-model","display_name":"First Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high"}],"priority":1},{"slug":"second-model","display_name":"Second Model","visibility":"list","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high"}],"priority":2}]}"#,
+    )
+    .unwrap_or_else(|error| panic!("cannot write test catalog: {error}"));
+    configure_catalog_path(&home.join("config.toml"), &catalog_path);
+
+    let (window, app) = open(cx, home, 1040., 740.);
+    idle(cx, window, &app).await;
+    click(cx, window, "initialize");
+    idle(cx, window, &app).await;
+    click(cx, window, "models-tab");
+    click(cx, window, "catalog-load");
+    idle(cx, window, &app).await;
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "catalog-search", "first-model");
+        window.render_frame(cx);
+        assert!(window.try_find("catalog-model-0").is_some());
+        assert!(window.try_find("catalog-model-1").is_none());
+    })
+    .unwrap_or_else(|error| panic!("cannot filter test model catalog: {error}"));
+
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-name", "Edited Model");
+    })
+    .unwrap_or_else(|error| panic!("cannot edit first model name: {error}"));
+    click(cx, window, "catalog-save");
+    idle(cx, window, &app).await;
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .search
+            .read(cx)
+            .value()
+            .to_string()),
+        "first-model"
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("catalog-model-0").is_some());
+        assert!(window.try_find("catalog-model-1").is_none());
+    })
+    .unwrap_or_else(|error| panic!("search filter disappeared after save: {error}"));
+
+    cx.update_window(window, |_, window, cx| {
+        replace_input(window, cx, "model-name", "Discarded Model");
+    })
+    .unwrap_or_else(|error| panic!("cannot create discard draft: {error}"));
+    click(cx, window, "catalog-discard");
+    assert!(!app.read_with(cx, |view, _| view.catalog.dirty));
+    assert_eq!(
+        app.read_with(cx, |view, cx| view
+            .catalog
+            .search
+            .read(cx)
+            .value()
+            .to_string()),
+        "first-model"
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("catalog-model-0").is_some());
+        assert!(window.try_find("catalog-model-1").is_none());
+    })
+    .unwrap_or_else(|error| panic!("search filter disappeared after discard: {error}"));
 }
