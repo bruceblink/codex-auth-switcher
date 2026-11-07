@@ -19,10 +19,11 @@ pub struct ModelCatalog {
     original: Vec<u8>,
     extra: BTreeMap<String, serde_json::Value>,
     home: PathBuf,
+    linked: bool,
 }
 
 /// Known fields that users can safely manage while preserving all other model metadata.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodexModel {
     pub slug: String,
     #[serde(default)]
@@ -39,7 +40,7 @@ pub struct CodexModel {
     extra: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReasoningLevel {
     pub effort: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -69,6 +70,13 @@ struct ModelCatalogDocument {
 pub struct ModelCatalogSaveResult {
     pub backup: Option<String>,
     pub model_count: usize,
+}
+
+impl ModelCatalog {
+    /// Linked catalogs must still match config.toml when saving.
+    pub fn is_linked(&self) -> bool {
+        self.linked
+    }
 }
 
 /// Resolve the path explicitly selected by Codex in `config.toml`.
@@ -137,6 +145,7 @@ fn read_model_catalog(path: &Path, path_text: String, home: &Path) -> Result<Mod
         original,
         extra: document.extra,
         home: home.to_path_buf(),
+        linked: true,
     })
 }
 
@@ -159,6 +168,14 @@ fn serialize_config(document: DocumentMut) -> Result<Vec<u8>> {
 }
 
 impl Store {
+    /// Open a selected JSON for editing without changing Codex configuration or authentication.
+    pub fn open_model_catalog(&self, path: &Path) -> Result<ModelCatalog> {
+        let (path, text) = selected_catalog_path(path, &self.paths.home)?;
+        let mut catalog = read_model_catalog(&path, text, &self.paths.home)?;
+        catalog.linked = false;
+        Ok(catalog)
+    }
+
     /// Load the Codex model catalog and retain its source bytes for conflict detection.
     pub fn load_model_catalog(&self) -> Result<ModelCatalog> {
         let path = configured_catalog_path(self)?;
@@ -312,12 +329,17 @@ impl Store {
         }
         validate_model_catalog(&catalog.models)?;
         let _lock = Lock::acquire(&self.paths)?;
-        let path = configured_catalog_path(self)?;
-        if catalog.path != path.to_string_lossy() {
-            return Err(Error(
-                "Codex model catalog path changed after it was loaded. Reload before saving.",
-            ));
-        }
+        let path = if catalog.linked {
+            let configured = configured_catalog_path(self)?;
+            if catalog.path != configured.to_string_lossy() {
+                return Err(Error(
+                    "Codex model catalog path changed after it was loaded. Reload before saving.",
+                ));
+            }
+            configured
+        } else {
+            PathBuf::from(&catalog.path)
+        };
         let current = files::read(&path, files::CONFIG_LIMIT)?
             .ok_or(Error("Configured Codex model catalog was not found."))?;
         if current != catalog.original {

@@ -116,6 +116,36 @@ fn empty_directory_status_is_read_only_and_reports_missing_config() -> anyhow::R
 }
 
 #[test]
+fn status_reports_config_and_auth_presence_for_all_setup_states() -> anyhow::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let paths = Paths {
+        home: temporary.path().into(),
+    };
+    let store = Store::isolated(paths.clone());
+
+    let status = store.status()?;
+    assert!(!status.config_exists);
+    assert!(!status.auth_exists);
+
+    fs::write(paths.config(), API)?;
+    let status = store.status()?;
+    assert!(status.config_exists);
+    assert!(!status.auth_exists);
+
+    fs::remove_file(paths.config())?;
+    fs::write(paths.auth(), SUB_AUTH)?;
+    let status = store.status()?;
+    assert!(!status.config_exists);
+    assert!(status.auth_exists);
+
+    fs::write(paths.config(), API)?;
+    let status = store.status()?;
+    assert!(status.config_exists);
+    assert!(status.auth_exists);
+    Ok(())
+}
+
+#[test]
 fn empty_directory_initializes_official_profiles_without_fake_auth_or_model() -> anyhow::Result<()>
 {
     let data = empty_data()?;
@@ -947,6 +977,68 @@ fn model_catalog_requires_an_explicit_config_path() -> anyhow::Result<()> {
 }
 
 #[test]
+fn unlinked_model_catalog_can_be_opened_and_saved_without_codex_files() -> anyhow::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let paths = Paths {
+        home: temporary.path().join("codex-home"),
+    };
+    fs::create_dir_all(&paths.home)?;
+    let store = Store::isolated(paths.clone());
+    let catalog_path = temporary.path().join("independent-models.json");
+    fs::write(&catalog_path, MODEL_CATALOG)?;
+    let original = fs::read(&catalog_path)?;
+
+    let mut catalog = store.open_model_catalog(&catalog_path)?;
+    assert!(!catalog.is_linked());
+    assert_eq!(catalog.models.len(), 1);
+    catalog.models[0].slug = "added-independent-model".into();
+    catalog.models[0].display_name = "Added Independent Model".into();
+    catalog.models.push(catalog.models[0].clone());
+    catalog.models[1].slug = "second-independent-model".into();
+    catalog.models[1].display_name = "Second Independent Model".into();
+
+    let (saved, result) = store.save_model_catalog(catalog)?;
+    let backup = result
+        .backup
+        .ok_or_else(|| anyhow::anyhow!("saving an unlinked catalog did not create a backup"))?;
+    assert_eq!(fs::read(&backup)?, original);
+    assert_eq!(saved.path, catalog_path.to_string_lossy());
+    assert!(!saved.is_linked());
+    assert_eq!(result.model_count, 2);
+
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&catalog_path)?)?;
+    assert_eq!(written["catalog_version"], 3);
+    assert_eq!(written["models"][0]["capability_marker"]["preserve"], true);
+    assert_eq!(written["models"][0]["context_window"], 123456);
+    assert_eq!(
+        written["models"][1]["supported_reasoning_levels"][0]["extension"],
+        true
+    );
+    assert!(!paths.config().exists());
+    assert!(!paths.auth().exists());
+    assert!(!paths.vault().exists());
+    let status = store.status()?;
+    assert!(!status.initialized);
+    assert!(!status.config_exists);
+
+    let mut stale = saved.clone();
+    stale.models[0].display_name = "Stale unlinked edit".into();
+    let mut external_update = fs::read(&catalog_path)?;
+    external_update.push(b'\n');
+    fs::write(&catalog_path, &external_update)?;
+    let error = store
+        .save_model_catalog(stale)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("an external edit to an unlinked catalog was accepted"))?;
+    assert_eq!(
+        error.0,
+        "The model catalog changed after it was loaded. Reload before saving."
+    );
+    assert_eq!(fs::read(&catalog_path)?, external_update);
+    Ok(())
+}
+
+#[test]
 fn model_catalog_edits_are_backed_up_and_preserve_unknown_metadata() -> anyhow::Result<()> {
     let temporary = tempfile::tempdir()?;
     let paths = Paths {
@@ -1062,6 +1154,7 @@ fn model_catalog_save_rejects_a_changed_config_path() -> anyhow::Result<()> {
     fs::write(&first_path, MODEL_CATALOG)?;
     fs::write(&second_path, MODEL_CATALOG)?;
     let mut catalog = store.load_model_catalog()?;
+    assert!(catalog.is_linked());
     catalog.models[0].display_name = "Changed while pending".into();
     configure_model_catalog(&paths, "second-models.json")?;
 

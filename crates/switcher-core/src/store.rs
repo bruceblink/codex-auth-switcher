@@ -77,6 +77,7 @@ pub struct ModeStatus {
 pub struct Status {
     pub config_path: String,
     pub config_exists: bool,
+    pub auth_exists: bool,
     /// Explicit catalog resolved from config.toml; None uses Codex's built-in catalog.
     pub model_catalog_path: Option<String>,
     pub mode: Option<Mode>,
@@ -311,6 +312,7 @@ impl Store {
         let config_bytes = files::read(&self.paths.config(), files::CONFIG_LIMIT)?;
         let config_exists = config_bytes.is_some();
         let auth = files::read(&self.paths.auth(), files::AUTH_LIMIT)?;
+        let auth_exists = auth.is_some();
         let active_config = config_bytes.unwrap_or_default();
         let doc = config::parse(&active_config)?;
         let mode = if config_exists {
@@ -350,6 +352,7 @@ impl Store {
         Ok(Status {
             config_path: self.paths.config().to_string_lossy().into(),
             config_exists,
+            auth_exists,
             model_catalog_path: configured_model_catalog_path(&doc, &self.paths.home)?
                 .map(|path| path.to_string_lossy().into_owned()),
             mode,
