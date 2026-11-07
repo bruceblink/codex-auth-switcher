@@ -1,6 +1,7 @@
 //! Local configuration and encrypted mode storage. Errors never contain input values.
 
 pub mod config;
+pub mod config_check;
 pub mod crypto;
 mod environment;
 mod files;
