@@ -82,13 +82,19 @@ foreach ($name in $environmentNames) {
     }
 }
 
+$resolvedLinker = Get-Command link.exe -CommandType Application -ErrorAction Stop
+if ([System.IO.Path]::GetFullPath($resolvedLinker.Source) -ine [System.IO.Path]::GetFullPath($linker)) {
+    throw "PATH must resolve link.exe to the selected MSVC linker: $linker"
+}
+
 $settings = @{
     CMAKE_GENERATOR = "Visual Studio $majorVersion $generatorYear"
     CMAKE_GENERATOR_PLATFORM = "x64"
     CMAKE_GENERATOR_INSTANCE = $installationPath
     CMAKE_GENERATOR_TOOLSET = "host=x64"
     CARGO_TARGET_DIR = Join-Path $repositoryRoot "target"
-    CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
+    # rustc recognizes this exact name when separating MSVC progress from warnings.
+    CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = "link.exe"
 }
 foreach ($entry in $settings.GetEnumerator()) {
     $value = [string]$entry.Value
