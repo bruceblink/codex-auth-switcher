@@ -16,35 +16,73 @@ git -C "$notes_repo" commit --quiet -m "build: create release baseline"
 git -C "$notes_repo" tag -a v0.1.0 -m "v0.1.0"
 printf 'feature\n' >>"$notes_repo/source.txt"
 git -C "$notes_repo" commit --quiet -am "feat: add a test feature"
+git -C "$notes_repo" tag -a v0.2.0 -m "v0.2.0 unpublished"
 printf 'fix\n' >>"$notes_repo/source.txt"
 git -C "$notes_repo" commit --quiet -am "fix: correct a test issue"
 printf 'docs\n' >>"$notes_repo/source.txt"
 git -C "$notes_repo" commit --quiet -am 'docs: preserve literal \t in a commit title'
-git -C "$notes_repo" tag -a v0.2.0 -m "v0.2.0"
+git -C "$notes_repo" tag -a v0.3.0 -m "v0.3.0"
 
 notes_file="$temporary_root/release-notes.md"
 (
   cd "$notes_repo"
-  bash "$script_dir/generate-notes.sh" v0.2.0 example/project "$notes_file"
+  bash "$script_dir/generate-notes.sh" v0.3.0 example/project "$notes_file" v0.1.0
 )
-grep -Eq '^## \[0\.2\.0\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$' "$notes_file"
+grep -Eq '^## \[0\.3\.0\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$' "$notes_file"
 grep -Eq '^### 🚀 新功能 / Features$' "$notes_file"
 grep -Eq '^### 🐛 问题修复 / Bug Fixes$' "$notes_file"
-grep -Eq 'Full Changelog.*v0\.1\.0\.\.\.v0\.2\.0' "$notes_file"
+grep -Eq 'Full Changelog.*v0\.1\.0\.\.\.v0\.3\.0' "$notes_file"
 grep -Fq 'feat: add a test feature' "$notes_file"
+grep -Fq 'fix: correct a test issue' "$notes_file"
 grep -Fq 'preserve literal \t in a commit title' "$notes_file"
 
-for invalid_tag in v0.2.0-rc.1 v00.2.0; do
+legacy_notes_file="$temporary_root/legacy-release-notes.md"
+(
+  cd "$notes_repo"
+  bash "$script_dir/generate-notes.sh" v0.3.0 example/project "$legacy_notes_file"
+)
+grep -Eq 'Full Changelog.*v0\.2\.0\.\.\.v0\.3\.0' "$legacy_notes_file"
+
+full_history_notes_file="$temporary_root/full-history-release-notes.md"
+(
+  cd "$notes_repo"
+  bash "$script_dir/generate-notes.sh" v0.3.0 example/project "$full_history_notes_file" ""
+)
+grep -Fq 'build: create release baseline' "$full_history_notes_file"
+grep -Fq 'feat: add a test feature' "$full_history_notes_file"
+if grep -Fq 'Full Changelog' "$full_history_notes_file"; then
+  echo "An explicitly empty release baseline unexpectedly generated a comparison link." >&2
+  exit 1
+fi
+
+git -C "$notes_repo" switch --quiet --detach v0.1.0
+printf 'unrelated\n' >>"$notes_repo/source.txt"
+git -C "$notes_repo" commit --quiet -am "feat: add an unrelated branch feature"
+git -C "$notes_repo" tag -a v9.0.0 -m "v9.0.0 unrelated"
+git -C "$notes_repo" switch --quiet --detach v0.3.0
+
+for invalid_tag in v0.3.0-rc.1 v00.3.0; do
   if (
     cd "$notes_repo"
-    bash "$script_dir/generate-notes.sh" "$invalid_tag" example/project "$temporary_root/invalid-notes.md"
+    bash "$script_dir/generate-notes.sh" "$invalid_tag" example/project "$temporary_root/invalid-notes.md" v0.1.0
   ) >/dev/null 2>&1; then
     echo "Release notes accepted a non-canonical stable tag: $invalid_tag" >&2
     exit 1
   fi
 done
 
-version=0.2.0
+for invalid_baseline in v0.3.0-rc.1 v0.3.0 v9.0.0 v8.0.0; do
+  if (
+    cd "$notes_repo"
+    bash "$script_dir/generate-notes.sh" v0.3.0 example/project \
+      "$temporary_root/invalid-baseline-notes.md" "$invalid_baseline"
+  ) >/dev/null 2>&1; then
+    echo "Release notes accepted an invalid, non-ancestor, or non-earlier baseline: $invalid_baseline" >&2
+    exit 1
+  fi
+done
+
+version=0.3.0
 windows_dir="$temporary_root/windows"
 linux_dir="$temporary_root/linux"
 macos_arm64_dir="$temporary_root/macos-arm64"
@@ -70,7 +108,7 @@ done
 
 output_dir="$temporary_root/release-assets"
 bash "$script_dir/aggregate-assets.sh" \
-  v0.2.0 \
+  v0.3.0 \
   "$notes_file" \
   "$output_dir" \
   "$windows_dir" \
@@ -78,7 +116,7 @@ bash "$script_dir/aggregate-assets.sh" \
   "$macos_arm64_dir"
 
 if bash "$script_dir/aggregate-assets.sh" \
-  v0.2.0-rc.1 \
+  v0.3.0-rc.1 \
   "$notes_file" \
   "$temporary_root/invalid-release-assets" \
   "$windows_dir" \
@@ -103,10 +141,10 @@ jq -e \
     and .notes == $notes
     and (.assets | length == 4)
     and ([.assets[].name] | sort) == [
-      "Codex-Auth-Switcher-0.2.0-linux-amd64.deb",
-      "Codex-Auth-Switcher-0.2.0-linux-x86_64.AppImage",
-      "Codex-Auth-Switcher-0.2.0-macos-arm64.dmg",
-      "Codex-Auth-Switcher-0.2.0-windows-x64-setup.exe"
+      "Codex-Auth-Switcher-0.3.0-linux-amd64.deb",
+      "Codex-Auth-Switcher-0.3.0-linux-x86_64.AppImage",
+      "Codex-Auth-Switcher-0.3.0-macos-arm64.dmg",
+      "Codex-Auth-Switcher-0.3.0-windows-x64-setup.exe"
     ]
   ' "$output_dir/update-manifest.json" >/dev/null
 
@@ -114,7 +152,7 @@ tampered_dir="$temporary_root/tampered"
 cp -a -- "$linux_dir" "$tampered_dir"
 printf 'tampered\n' >>"$tampered_dir/$linux_deb"
 if bash "$script_dir/aggregate-assets.sh" \
-  v0.2.0 \
+  v0.3.0 \
   "$notes_file" \
   "$temporary_root/should-not-exist" \
   "$windows_dir" \

@@ -53,6 +53,11 @@ jobs:
         shell: pwsh
         run: .\scripts\enable-windows-msvc.ps1
 
+      - name: Test Windows MSVC linker precedence
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\test-enable-windows-msvc.ps1
+
       - name: Report toolchain and architecture
         shell: bash
         run: |

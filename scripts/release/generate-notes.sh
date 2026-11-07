@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "Usage: $0 <tag> <owner/repository> <output-file>" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+  echo "Usage: $0 <tag> <owner/repository> <output-file> [previous-released-tag]" >&2
   exit 2
 fi
 
 tag=$1
 repository=$2
 output_file=$3
+explicit_previous_tag=${4:-}
 
 if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
   echo "Release tag must be a v-prefixed semantic version: $tag" >&2
@@ -19,9 +20,38 @@ if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   exit 1
 fi
 
-git rev-parse --verify "$tag^{commit}" >/dev/null
+tag_object_type=$(git cat-file -t "refs/tags/$tag" 2>/dev/null || true)
+if [[ "$tag_object_type" != "tag" ]]; then
+  echo "Release tag must exist locally and be annotated: $tag" >&2
+  exit 1
+fi
+tag_commit=$(git rev-parse --verify "$tag^{}")
 version=${tag#v}
-previous_tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$tag^" 2>/dev/null || true)
+
+if [[ $# -eq 4 ]]; then
+  previous_tag=$explicit_previous_tag
+else
+  previous_tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$tag^" 2>/dev/null || true)
+fi
+
+if [[ -n "$previous_tag" ]]; then
+  if [[ ! "$previous_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    echo "Previous release tag must be a v-prefixed semantic version: $previous_tag" >&2
+    exit 1
+  fi
+  previous_object_type=$(git cat-file -t "refs/tags/$previous_tag" 2>/dev/null || true)
+  if [[ "$previous_object_type" != "tag" ]]; then
+    echo "Previous release tag must exist locally and be annotated: $previous_tag" >&2
+    exit 1
+  fi
+  previous_commit=$(git rev-parse --verify "$previous_tag^{}")
+  if [[ "$previous_commit" == "$tag_commit" ]] ||
+    ! git merge-base --is-ancestor "$previous_commit" "$tag_commit"; then
+    echo "Previous release tag must point to an earlier ancestor commit: $previous_tag" >&2
+    exit 1
+  fi
+fi
+
 today=$(date -u +'%Y-%m-%d')
 
 declare -A section_contents=()

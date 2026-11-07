@@ -52,4 +52,4 @@
 
 2026-11-07 补充运行 `scripts/test-v2-native-ui.ps1`，使用 Release 程序和脚本创建的隔离目录。脚本通过订阅/API 往返、预览返回与取消不写文件、共享设置保留、模型复制保存和备份检查。脚本结束后没有残留测试进程或临时目录。
 
-修改后的源码通过格式检查、workspace 全目标检查、严格 Clippy 和 workspace 测试。测试结果为 core 66 项通过、1 项 Docker 下载集成测试忽略，隔离环境 1 项通过，桌面 40 项通过。Debug 与 Release 构建均通过。上述 Release 程序 SHA-256 为 `c3112db30b30dfc36c4c2ad8a3d2f57a21b619c8068f9d30b0ade76365df0833`；它用于本地窗口验收，不是 `v0.5.0` 最终发布构件。
+修改后的源码通过格式检查、workspace 全目标检查、严格 Clippy 和 workspace 测试。测试结果为 core 66 项通过、1 项 Docker 下载集成测试忽略，隔离环境 1 项通过，桌面 40 项通过。Debug 与 Release 构建均通过。上述 Release 程序 SHA-256 为 `c3112db30b30dfc36c4c2ad8a3d2f57a21b619c8068f9d30b0ade76365df0833`；它用于本地窗口验收，不是 `v0.5.1` 最终发布构件。

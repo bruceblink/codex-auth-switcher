@@ -58,6 +58,7 @@ foreach ($requiredName in @("PATH", "INCLUDE", "LIB", "VCToolsInstallDir", "Wind
 
 $compiler = Join-Path $visualStudioEnvironment["VCToolsInstallDir"] "bin\Hostx64\x64\cl.exe"
 $linker = Join-Path $visualStudioEnvironment["VCToolsInstallDir"] "bin\Hostx64\x64\link.exe"
+$linkerDirectory = Split-Path -Parent $linker
 $sdkVersion = ([string]$visualStudioEnvironment["WindowsSDKVersion"]).TrimEnd([char]'\')
 $resourceCompiler = Join-Path $visualStudioEnvironment["WindowsSdkDir"] "bin\$sdkVersion\x64\rc.exe"
 foreach ($toolPath in @($compiler, $linker, $resourceCompiler)) {
@@ -66,6 +67,7 @@ foreach ($toolPath in @($compiler, $linker, $resourceCompiler)) {
     }
 }
 
+$visualStudioEnvironment["PATH"] = "$linkerDirectory;$($visualStudioEnvironment["PATH"])"
 $environmentNames = @(
     "PATH", "INCLUDE", "LIB", "LIBPATH",
     "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
@@ -82,9 +84,12 @@ foreach ($name in $environmentNames) {
     }
 }
 
-$resolvedLinker = Get-Command link.exe -CommandType Application -ErrorAction Stop
-if ([System.IO.Path]::GetFullPath($resolvedLinker.Source) -ine [System.IO.Path]::GetFullPath($linker)) {
-    throw "PATH must resolve link.exe to the selected MSVC linker: $linker"
+$resolvedLinker = Get-Command link.exe -CommandType Application -All -ErrorAction Stop |
+    Select-Object -First 1
+$resolvedLinkerPath = [System.IO.Path]::GetFullPath($resolvedLinker.Source)
+$expectedLinkerPath = [System.IO.Path]::GetFullPath($linker)
+if ($resolvedLinkerPath -ine $expectedLinkerPath) {
+    throw "PATH resolved link.exe to '$resolvedLinkerPath'; expected selected MSVC linker '$expectedLinkerPath'."
 }
 
 $settings = @{

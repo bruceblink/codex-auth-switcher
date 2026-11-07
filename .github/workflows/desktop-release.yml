@@ -340,6 +340,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
           GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
@@ -375,9 +376,83 @@ jobs:
             echo "Checked out commit does not match the release tag commit." >&2
             exit 1
           }
+
+          releases_json="$(gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100")"
+          jq -e 'type == "array" and all(.[]; type == "array")' <<<"$releases_json" >/dev/null
+          published_tags=()
+          while IFS= read -r published_tag; do
+            [[ -n "$published_tag" ]] && published_tags+=("$published_tag")
+          done < <(
+            jq -r \
+              --arg target "$RELEASE_TAG" \
+              '
+                [.[][] |
+                  select(.draft == false and .prerelease == false and .tag_name != $target) |
+                  select(.tag_name | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")) |
+                  .tag_name
+                ] | .[]
+              ' <<<"$releases_json"
+          )
+
+          candidate_tags=()
+          candidate_commits=()
+          for published_tag in "${published_tags[@]}"; do
+            tag_object_type="$(git cat-file -t "refs/tags/$published_tag" 2>/dev/null || true)"
+            [[ "$tag_object_type" == "tag" ]] || {
+              echo "Published stable release tag is missing locally or is not annotated: $published_tag" >&2
+              exit 1
+            }
+            published_commit="$(git rev-parse --verify "$published_tag^{}")"
+            if [[ "$published_commit" == "$tag_commit" ]]; then
+              continue
+            fi
+            if git merge-base --is-ancestor "$published_commit" "$tag_commit"; then
+              candidate_tags+=("$published_tag")
+              candidate_commits+=("$published_commit")
+            fi
+          done
+
+          latest_candidate_indices=()
+          for ((candidate_index = 0; candidate_index < ${#candidate_commits[@]}; candidate_index++)); do
+            has_newer_published_ancestor=false
+            for ((other_index = 0; other_index < ${#candidate_commits[@]}; other_index++)); do
+              if [[ "${candidate_commits[$candidate_index]}" != "${candidate_commits[$other_index]}" ]] &&
+                git merge-base --is-ancestor \
+                  "${candidate_commits[$candidate_index]}" \
+                  "${candidate_commits[$other_index]}"; then
+                has_newer_published_ancestor=true
+                break
+              fi
+            done
+            if [[ "$has_newer_published_ancestor" == "false" ]]; then
+              latest_candidate_indices+=("$candidate_index")
+            fi
+          done
+
+          if [[ ${#latest_candidate_indices[@]} -eq 0 ]]; then
+            previous_released_tag=""
+          else
+            latest_commit="${candidate_commits[${latest_candidate_indices[0]}]}"
+            for candidate_index in "${latest_candidate_indices[@]}"; do
+              if [[ "${candidate_commits[$candidate_index]}" != "$latest_commit" ]]; then
+                echo "Published stable release history has multiple incomparable baselines for $RELEASE_TAG." >&2
+                exit 1
+              fi
+            done
+            latest_tags=()
+            for candidate_index in "${latest_candidate_indices[@]}"; do
+              latest_tags+=("${candidate_tags[$candidate_index]}")
+            done
+            previous_released_tag="$(printf '%s\n' "${latest_tags[@]}" | sort -V | tail -n 1)"
+          fi
+
           shellcheck -x scripts/release/*.sh
           bash scripts/release/test-release-scripts.sh
-          bash scripts/release/generate-notes.sh "$RELEASE_TAG" "$GH_REPO" release-notes.md
+          bash scripts/release/generate-notes.sh \
+            "$RELEASE_TAG" \
+            "$GH_REPO" \
+            release-notes.md \
+            "$previous_released_tag"
 
       - name: Aggregate and verify all four packages
         shell: bash
