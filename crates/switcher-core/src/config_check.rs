@@ -163,12 +163,11 @@ fn inspect(document: &DocumentMut) -> Vec<ConfigIssue> {
         "model_post_turn_compact_threshold_percent",
         &mut issues,
     );
+    check_string(document, "model_reasoning_effort", &mut issues);
     check_enum(
         document,
-        "model_reasoning_effort",
-        &[
-            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-        ],
+        "model_reasoning_summary",
+        &["auto", "concise", "detailed", "none"],
         &mut issues,
     );
     check_enum(
@@ -198,7 +197,7 @@ fn inspect(document: &DocumentMut) -> Vec<ConfigIssue> {
     check_enum(
         document,
         "web_search",
-        &["disabled", "cached", "live"],
+        &["disabled", "cached", "live", "indexed"],
         &mut issues,
     );
 
@@ -238,21 +237,38 @@ fn inspect(document: &DocumentMut) -> Vec<ConfigIssue> {
             false,
         ));
     }
+    if document.get("background_terminal_timeout").is_some() {
+        issues.push(issue(
+            "background_terminal_timeout",
+            "后台终端设置名称已替代",
+            "请改用 background_terminal_max_timeout。检查器不会复制或删除此设置。",
+            ConfigIssueSeverity::Warning,
+            false,
+        ));
+    }
 
     inspect_features(document, &mut issues);
 
-    if document
-        .get("personality")
-        .and_then(Item::as_str)
-        .is_some_and(|personality| matches!(personality, "friendly" | "pragmatic"))
-    {
-        issues.push(issue(
-            "personality",
-            "个性值不再选择样式",
-            "friendly 和 pragmatic 已过时。清理可以删除这两个值；none 仍有意义并会保留。",
-            ConfigIssueSeverity::Warning,
-            true,
-        ));
+    match document.get("personality").and_then(Item::as_str) {
+        Some("friendly" | "pragmatic") => {
+            issues.push(issue(
+                "personality",
+                "个性值不再选择样式",
+                "friendly 和 pragmatic 已过时。清理可以删除这两个值；none 仍有意义并会保留。",
+                ConfigIssueSeverity::Warning,
+                true,
+            ));
+        }
+        Some("none") | None => {}
+        Some(_) => {
+            issues.push(issue(
+                "personality",
+                "个性值未识别",
+                "此值不在当前规则列出的 none、friendly、pragmatic 中。检查器不会修改此值。",
+                ConfigIssueSeverity::Warning,
+                false,
+            ));
+        }
     }
 
     issues
@@ -305,6 +321,15 @@ fn inspect_features(document: &DocumentMut, issues: &mut Vec<ConfigIssue>) {
                 false,
             ));
         }
+    }
+    if table.contains_key("codex_hooks") {
+        issues.push(issue(
+            "features.codex_hooks",
+            "功能设置名称已弃用",
+            "features.codex_hooks 是旧名称，请改用 features.hooks。检查器不会复制或删除此设置。",
+            ConfigIssueSeverity::Warning,
+            false,
+        ));
     }
 }
 
@@ -558,7 +583,7 @@ mod tests {
     fn check_reports_common_types_and_preserves_meaningful_none() -> anyhow::Result<()> {
         let data = TestStore::new(
             "model_context_window = \"not-an-integer\"\n\
-             model_reasoning_effort = \"impossible\"\n\
+             model_reasoning_effort = 3\n\
              personality = \"none\"\n",
         )?;
 
@@ -578,6 +603,77 @@ mod tests {
         );
         assert!(!report.issues.iter().any(|issue| issue.key == "personality"));
         assert!(!report.can_cleanup());
+        Ok(())
+    }
+
+    #[test]
+    fn check_accepts_model_specific_reasoning_effort_and_indexed_search() -> anyhow::Result<()> {
+        let data = TestStore::new(
+            "model_reasoning_effort = \"model-specific\"\n\
+             model_reasoning_summary = \"detailed\"\n\
+             web_search = \"indexed\"\n",
+        )?;
+
+        let report = data.store.check_config()?;
+
+        assert!(!report.issues.iter().any(|issue| {
+            matches!(
+                issue.key.as_str(),
+                "model_reasoning_effort" | "model_reasoning_summary" | "web_search"
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn check_reports_new_config_aliases_and_unknown_personality() -> anyhow::Result<()> {
+        let data = TestStore::new(
+            "personality = \"custom\"\n\
+             background_terminal_timeout = 30\n\
+             [features]\n\
+             codex_hooks = true\n",
+        )?;
+
+        let report = data.store.check_config()?;
+
+        for key in [
+            "personality",
+            "background_terminal_timeout",
+            "features.codex_hooks",
+        ] {
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.key == key && !issue.cleanup)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn check_accepts_ultra_effort_and_granular_approval_policy() -> anyhow::Result<()> {
+        let data = TestStore::new(
+            "model_reasoning_effort = \"ultra\"\n\
+             plan_mode_reasoning_effort = \"medium\"\n\
+             [approval_policy]\n\
+             reject = \"never\"\n",
+        )?;
+
+        let report = data.store.check_config()?;
+
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| issue.key == "model_reasoning_effort")
+        );
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| issue.key == "approval_policy")
+        );
         Ok(())
     }
 
@@ -702,6 +798,25 @@ mod tests {
         assert_eq!(
             fs::read_to_string(data.store.paths.config())?,
             "personality = \"none\"\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_rejects_a_concurrent_operation_without_writing() -> anyhow::Result<()> {
+        let data = TestStore::new("personality = \"friendly\"\n")?;
+        let report = data.store.check_config()?;
+        let _guard = Lock::acquire(&data.store.paths)?;
+        let error = data
+            .store
+            .clean_config(&report)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("cleanup proceeded during another operation"))?;
+
+        assert_eq!(error.to_string(), "Another switcher operation is running.");
+        assert_eq!(
+            fs::read_to_string(data.store.paths.config())?,
+            "personality = \"friendly\"\n"
         );
         Ok(())
     }
