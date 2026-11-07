@@ -33,6 +33,9 @@ zeroize = { version = "1", features = ["derive"] }
 unwrap_used = "deny"
 expect_used = "deny"
 
+[workspace.lints.rust]
+linker_messages = "allow"
+
 [profile.dev]
 debug = 0
 
